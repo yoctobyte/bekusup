@@ -1,82 +1,152 @@
-# Bekusup - Tape-Drive Style Rotating Backup System
+# Bekusup — Tape-Drive Style Rotating Backup
 
-> [!CAUTION]
-> **THICK DISCLAIMER:** This project actively modifies file systems and executes elevated block-device probing logic to handle disk mounts programmatically. While highly guarded, manipulating physical block partitions (especially over dynamic `/dev/` paths) always carries the risk of data loss. Do NOT run this tool to manage your only copy of critical data without fully understanding the underlying configuration files, `.bekusup-volume.json` marker structures, and the behavior of `rsync --delete`. The authors bear no responsibility for destroyed data, accidentally formatted system partitions, or backup failures. Test with disposable hard drives first!
+A rotating backup tool that writes plain, browsable filesystem trees to enrolled backup disks. Point-in-time snapshots share storage via `rsync --link-dest` (same disk) and `--copy-dest` (across two drives in the same dock). Restore by plugging any enrolled disk into any Linux machine and copying files out — no proprietary format, no chunk catalog.
 
-## Philosophy
-`bekusup` sits on the idea that backup behavior shouldn't be overly "magical." Typical modern rotation setups enforce entirely opaque differential blob catalogs or cloud-tied subscriptions where user visibility into file structure is strictly zero. 
+## Quick start
 
-Our philosophy is built on tape-drive rotation mentality mixed with native system primitives: A backup drive should exist as a complete, fully traversable, point-in-time filesystem tree. You should be able to plug the disk into any foreign Linux machine, browse perfectly uncompressed file directories, and pull out a single file manually without parsing intermediate delta layers. At the same time, maintaining point-in-time snapshots should not waste space nor drastically tax network pipes.
+1. **Install** — `sudo apt install rsync sshpass util-linux python3-yaml`, then clone this repo. (Full installation details below.)
+2. **Configure** — create a `config.yaml` in the repo root describing your backup-disk label and the hosts/paths to back up. Minimal example below.
+3. **Enroll once, then run** — plug in a backup disk and run `./bekusup-cli.sh enroll` once per disk. After that, `./bekusup-cli.sh run` performs one backup cycle. Use `./bekusup-cli.sh scan` any time to see enrollment and history status.
 
-## Goals
-- Provide **Offline Resilience**: Allow mobile hosts (like laptops) to gracefully be skipped when inaccessible, safely generating `.incomplete` session markers locally.
-- Prevent **Operator Sloppiness**: Guard against dual-mounting mistakes, accidentally using internal root-drives, and overlaps via `fcntl` locking boundaries.
-- Ensure **High Spatial/Network Efficiency**: Use native filesystem hardlinks (`--link-dest`) and SATA differential network intercepting (`--copy-dest` cache-forwarding) instead of pulling immutable files iteratively.
+## Minimal configuration
 
-## Strengths and Weaknesses
-**Strong Points:**
-- Extremely transparent underlying data structure (directories instead of proprietary binary chunks).
-- Space efficient! Running 5 sessions across the same day costs no more physical disk space than a single session (given files aren't changed) due to native hardlinking.
-- Incredibly fast Dual-Drive caching (`rsync --copy-dest`) that clones unaltered data across a fresh SATA drive locally rather than routing back up across your internet layer.
-- Handles parallel, concurrent remote endpoints efficiently allowing unresponsive SSH connections to comfortably timeout off the primary processing thread.
+```yaml
+destination:
+  label_contains: backup            # partition label substring that identifies an eligible disk
+  fallback_mount_root: /mnt/bekusup # where to mount a disk that isn't already mounted
+  auto_unmount: false
 
-**Weak Points:**
-- If you use a non-POSIX capable filesystem (e.g. `FAT32` or `exFAT`) as the destination media, hardlinks physically cannot be created, obliterating the spatial optimizations and converting every snapshot into an exhaustive raw file-copy.
-- The `IndexStore` lives strictly on the execution machine's `~/.local/share/bekusup/` folder. This means `bekusup` tracks disk trust perfectly locally, but pulling the rotated backups to an entirely foreign server won't transfer its rotation history organically without manual indexing.
+run_policy:
+  min_free_space_gb: 20
+  max_parallel_hosts: 2
 
-## Limitations
-- Relies directly on `rsync` being available efficiently on the remote nodes (though an `scp` base fallback triggers if configured).
-- Not designed to resolve mid-transfer block corruptions iteratively; it assumes standard `rsync -aH` executions succeed if their subprocesses emit standard zero-exits.
+hosts:
+  - name: laptop
+    transport: ssh
+    uri: ssh://user@10.0.0.5     # append :2222 for non-default SSH ports
+    paths:
+      - source: /home/user
+        dest_subdir: home
+  - name: localfiles
+    transport: local
+    paths:
+      - source: /srv/data
+        dest_subdir: srv-data
+```
+
+For password-over-SSH (not recommended, but supported): `ssh://user:password@host`. Requires `sshpass`.
+
+## Commands
+
+| Command | Action |
+|---|---|
+| `scan` | Reports eligible disks, enrollment status, session history, and per-host last-known-good coverage. |
+| `enroll` | One-time approval of a newly plugged disk: writes `.bekusup-volume.json` to it and records its serial/UUID locally. |
+| `run` | Performs one backup cycle across all enrolled disks present, backing up every configured host to each one. |
+
+```bash
+./bekusup-cli.sh --config ./config.yaml scan
+./bekusup-cli.sh enroll
+./bekusup-cli.sh run
+```
 
 ## Installation
-`bekusup` depends strictly on Python 3 and basic OS `util-linux` primitives (`lsblk`, `mount`). 
 
-1. Ensure standard networking tools are installed globally:
+### System packages (recommended on Debian/Ubuntu)
+
 ```bash
-sudo apt install rsync sshpass util-linux
+sudo apt install rsync sshpass util-linux python3-yaml
 ```
-2. Inject the bare-bones Python dependencies in your target environment:
+
+This gets you everything Bekusup needs without pip or a virtualenv. `python3-yaml` provides the PyYAML dependency.
+
+### Clone
+
 ```bash
 git clone <repo-url> bekusup
 cd bekusup
+```
+
+The CLI wrapper (`bekusup-cli.sh`) sets `PYTHONPATH` to the repo and invokes `python3 -m bekusup.cli`, so no system-wide install is required.
+
+### Pip alternative
+
+If you prefer pip (in a virtualenv or with `--user`):
+
+```bash
 pip install -r requirements.txt
 ```
 
-### Test Prerequisites
+### Test prerequisites
 
-On Debian/Ubuntu systems, install `pytest` with:
+On Debian/Ubuntu:
 
 ```bash
 sudo apt install python3-pytest
 ```
 
-## Workflows and Variations
+Run the suite with `python3 -m pytest -q`.
 
-### 1. The Single Swap Rotation
-The traditional workflow:
-1. Every Sunday, you physically un-plug **Disk A** from the USB/SATA dock.
-2. You insert **Disk B** (which contains last week's snapshots).
-3. If not enrolled, you run `./bekusup-cli.sh enroll`.
-4. You run `./bekusup-cli.sh run` manually or via a basic cron task. The tool naturally locates the drive's previous session, builds a hardlink tree over it, and queries your target hosts. 
+## Workflows
 
-### 2. The Dual-Drive Smartass Optimization
-You own a 2-bay NAS structure, or use both drives simultaneously.
-1. You slot in yesterday's drive (**Disk A**).
-2. You slot in the totally fresh, newly enrolled drive out of your 42-drive box (**Disk B**).
-3. Both disks match the internal label identifiers.
-4. When `bekusup run` is fired, the engine internally sequences the drives by 'Freshness' (consulting the index).
-5. **Disk A** is backed-up first. It uses its own snapshots via `--link-dest` saving immediate space.
-6. **Disk B** is backed-up second. Identifying that it does not possess a viable recent snapshot, but `Disk A` literally just successfully created one natively, it flips arguments across block devices! `rsync` utilizes `--copy-dest=/mnt/disk_A/sessions/today` fetching the updated directory trees straight from your local dock, hitting 0 bytes of network transit. 
+### 1. Single-disk rotation
 
-## CLI Usage
+The traditional swap-a-disk-each-week pattern:
 
-| Command | Action |
-|---|---|
-| `scan` | Evaluates `/dev/` topologies reporting connected matches containing the `label` parameter mapped in config alongside their internal `Trust/Enrolled` configurations. |
-| `enroll` | Evaluates a single connected, label-matched target placing `.bekusup-volume.json` physically on it and synchronizing its Serial parameter securely inside `IndexStore`. |
-| `run` | Initiates the backup rotation loop synchronously across all hosts. | 
+1. Every Sunday, unplug last week's **Disk A** from the dock.
+2. Plug in **Disk B** (which holds the previous rotation's snapshots).
+3. If Disk B has never been used with Bekusup on this machine, run `./bekusup-cli.sh enroll`.
+4. Run `./bekusup-cli.sh run` manually or from cron. The tool locates Disk B's previous session, builds a hardlink-based session over it via `rsync --link-dest`, and pulls from each configured host.
 
-```bash
-# Example syntax wrapper execution
-./bekusup-cli.sh --config ./config.yaml scan
-```
+### 2. Dual-drive cache acceleration
+
+If you dock two enrolled disks simultaneously (2-bay NAS, dual dock, etc.):
+
+1. Slot in yesterday's **Disk A** and a fresher / newly enrolled **Disk B**.
+2. `bekusup run` orders the two by freshness (newest local session first).
+3. **Disk A** is backed up first, reusing its own prior session as a `--link-dest` base.
+4. **Disk B** is backed up second. For any host that just succeeded on Disk A, Disk B uses Disk A's fresh session as a `--copy-dest` base — so the bytes are cloned locally across the dock instead of pulled again over the network.
+
+If a host fails or is unreachable on Disk A, Disk B falls back to pulling that one host directly from the source. The cache re-use is per-host, not all-or-nothing.
+
+## Philosophy
+
+Bekusup is built on the idea that backup behavior shouldn't be "magical." Typical rotation tools use opaque differential blob catalogs or cloud-tied subscriptions where user visibility into the file structure is zero.
+
+A backup disk should be a complete, fully browsable, point-in-time filesystem tree. You should be able to plug it into any Linux machine, walk the directories, and pull out a single file without parsing any intermediate format. At the same time, maintaining point-in-time snapshots should not waste space or network bandwidth.
+
+## Goals
+
+- **Offline resilience.** Mobile hosts (laptops) that aren't reachable are cleanly skipped and recorded as `unreachable` in the session manifest.
+- **Operator sloppiness guards.** `fcntl`-based single-instance locking; refusal to back up to internal/system disks; hard rejection of spoofed serial or UUID; refusal to enroll a disk with no stable identity.
+- **Space and network efficiency.** Native filesystem hardlinks (`--link-dest`) for same-disk reuse; `--copy-dest` for cross-disk local cloning instead of re-pulling unchanged data.
+
+## Strengths and weaknesses
+
+**Strengths**
+
+- Transparent data structure: directories, not proprietary chunks.
+- Space efficient: N sessions in one day cost roughly one session's worth of disk, because unchanged files are hardlinked across sessions.
+- Cross-drive acceleration: when two enrolled disks are docked, the second one clones unchanged data from the first locally.
+- Concurrent host execution with per-host timeouts so a dead SSH endpoint doesn't stall the whole run.
+
+**Weaknesses**
+
+- Requires a POSIX-capable destination filesystem for the hardlink optimization. `FAT32` / `exFAT` destinations degrade every session to a full file copy.
+- The local index (`~/.local/share/bekusup/index.json`) is per-machine. Moving rotated disks to a different machine will not transfer the rotation history without manual re-enrollment.
+
+## Limitations
+
+- Requires `rsync` available on the remote side of each SSH host (falls back to `scp` if explicitly configured).
+- Does not attempt mid-transfer block-level recovery. Transfers are considered successful only when the `rsync` subprocess exits zero.
+
+---
+
+## Disclaimer
+
+> [!CAUTION]
+> Bekusup modifies filesystems and runs elevated block-device probing to manage disk mounts programmatically. While guarded, manipulating physical block partitions (especially over dynamic `/dev/` paths) always carries the risk of data loss.
+>
+> **Do not run this tool against your only copy of critical data** without fully understanding the `config.yaml` options, the `.bekusup-volume.json` marker semantics, and the behavior of `rsync --delete`.
+>
+> The authors accept no responsibility for destroyed data, accidentally formatted partitions, or backup failures. Test with disposable drives first.
