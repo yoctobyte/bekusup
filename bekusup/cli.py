@@ -61,6 +61,7 @@ def build_minimal_local_config():
             "incomplete_suffix": ".incomplete",
             "complete_marker": "SESSION_COMPLETE",
             "max_parallel_hosts": 2,
+            "run_without_command": False,
         },
         "hosts": [
             {
@@ -93,22 +94,71 @@ def write_yaml_atomic(path, data):
         raise
 
 
-def run_init_wizard(config_path):
+def run_config_wizard(config_path, allow_overwrite):
     target = os.path.abspath(config_path)
-    if os.path.exists(target):
+    if os.path.exists(target) and not allow_overwrite:
         print(f"Config already exists at {target}. Refusing to overwrite it automatically.")
         return 1
 
-    print(f"Creating a starter config at {target}. Press Ctrl-C to abort.")
-    try:
+    if os.path.exists(target):
+        print(f"Reconfiguring existing config at {target}. Press Ctrl-C to abort.")
+        try:
+            existing = load_config(target)
+            default_data = {
+                "destination": {
+                    "label_contains": existing.destination.label_contains,
+                    "fallback_mount_root": existing.destination.fallback_mount_root,
+                    "auto_unmount": existing.destination.auto_unmount,
+                },
+                "run_policy": {
+                    "min_free_space_gb": existing.run_policy.min_free_space_gb,
+                    "incomplete_suffix": existing.run_policy.incomplete_suffix,
+                    "complete_marker": existing.run_policy.complete_marker,
+                    "max_parallel_hosts": existing.run_policy.max_parallel_hosts,
+                    "run_without_command": existing.run_policy.run_without_command,
+                },
+                "hosts": [
+                    {
+                        "name": existing.hosts[0].name if existing.hosts else socket.gethostname() or "localhost",
+                        "transport": existing.hosts[0].transport if existing.hosts else "local",
+                        "paths": [
+                            {
+                                "source": existing.hosts[0].paths[0].source if existing.hosts and existing.hosts[0].paths else os.path.join("/home", os.environ.get("USER") or "user"),
+                                "dest_subdir": existing.hosts[0].paths[0].dest_subdir if existing.hosts and existing.hosts[0].paths else os.path.join("home", os.environ.get("USER") or "user"),
+                            }
+                        ],
+                    }
+                ],
+            }
+        except SystemExit:
+            default_data = build_minimal_local_config()
+    else:
+        print(f"Creating a starter config at {target}. Press Ctrl-C to abort.")
         default_data = build_minimal_local_config()
+
+    try:
         hostname = default_data["hosts"][0]["name"]
         source = default_data["hosts"][0]["paths"][0]["source"]
+        run_without_command = default_data["run_policy"].get("run_without_command", False)
         host_name = input(f"Host name [{hostname}]: ").strip() or hostname
         source_path = input(f"Source path [{source}]: ").strip() or source
+        auto_run_default = "y" if run_without_command else "n"
+        auto_run_answer = (
+            input(
+                "When no CLI command is given, run backup immediately? "
+                f"[y/N default={auto_run_default}]: "
+            )
+            .strip()
+            .lower()
+        )
+        if auto_run_answer in ("y", "yes"):
+            run_without_command = True
+        elif auto_run_answer in ("n", "no"):
+            run_without_command = False
 
         default_data["hosts"][0]["name"] = host_name
         default_data["hosts"][0]["paths"][0]["source"] = source_path
+        default_data["run_policy"]["run_without_command"] = run_without_command
         write_yaml_atomic(target, default_data)
     except KeyboardInterrupt:
         print("\nInitialization cancelled. No config was written.", file=sys.stderr)
@@ -122,16 +172,39 @@ def run_init_wizard(config_path):
     return 0
 
 
-def interactive_no_config_menu(config_path):
-    print(f"No config file found at {os.path.abspath(config_path)}.")
-    print("Choose an action:")
-    print("  1. Create a starter localhost config")
-    print("  2. Scan for candidate backup disks")
-    print("  3. Enroll a backup disk")
-    print("  q. Quit")
-    choice = input("> ").strip().lower()
+def interactive_menu(config_path, config_exists):
+    abs_config = os.path.abspath(config_path)
+    if config_exists:
+        print(f"Config found at {abs_config}.")
+        print("Choose an action:")
+        print("  [Enter]. Run backup now")
+        print("  1. Run backup now")
+        print("  2. Scan for candidate backup disks")
+        print("  3. Enroll a backup disk")
+        print("  4. Reconfigure config")
+        print("  q. Quit")
+    else:
+        print(f"No config file found at {abs_config}.")
+        print("Choose an action:")
+        print("  [Enter]. Create a starter localhost config")
+        print("  1. Create a starter localhost config")
+        print("  2. Scan for candidate backup disks")
+        print("  3. Enroll a backup disk")
+        print("  q. Quit")
 
-    if choice == "1":
+    choice = input("> ").strip().lower()
+    if config_exists:
+        if choice in ("", "1"):
+            return "run"
+        if choice == "2":
+            return "scan"
+        if choice == "3":
+            return "enroll"
+        if choice == "4":
+            return "configure"
+        return None
+
+    if choice in ("", "1"):
         return "init"
     if choice == "2":
         return "scan"
@@ -146,12 +219,14 @@ def ensure_config_exists_or_route(args):
         return args.command
 
     if config_exists:
-        print(
-            f"No command specified. Defaulting to `run` with config {os.path.abspath(args.config)}."
-        )
-        return "run"
+        config = load_config(args.config)
+        if config.run_policy.run_without_command:
+            print(
+                "No command specified. Config is set to run backup immediately on bare invocation."
+            )
+            return "run"
 
-    selection = interactive_no_config_menu(args.config)
+    selection = interactive_menu(args.config, config_exists)
     if selection is None:
         print("Nothing selected. Exiting.")
         return None
@@ -375,7 +450,11 @@ def cmd_enroll(args, config):
 
 
 def cmd_init(args, _config):
-    raise SystemExit(run_init_wizard(args.config))
+    raise SystemExit(run_config_wizard(args.config, allow_overwrite=False))
+
+
+def cmd_configure(args, _config):
+    raise SystemExit(run_config_wizard(args.config, allow_overwrite=True))
 
 
 def build_parser():
@@ -398,6 +477,7 @@ def build_parser():
     subparsers.add_parser("scan", help="Report eligible disks, mount state, free space, and recent sessions")
     subparsers.add_parser("enroll", help="Perform one-time approval of a new backup disk")
     subparsers.add_parser("init", help="Interactively create a starter config")
+    subparsers.add_parser("configure", help="Interactively update the existing config")
     return parser
 
 
@@ -412,7 +492,9 @@ def main(argv=None):
     args.command = command
 
     if command == "init":
-        return run_init_wizard(args.config)
+        return run_config_wizard(args.config, allow_overwrite=False)
+    if command == "configure":
+        return run_config_wizard(args.config, allow_overwrite=True)
 
     if command in ("scan", "enroll") and not os.path.exists(args.config):
         config = Config()
@@ -428,6 +510,8 @@ def main(argv=None):
         cmd_scan(args, config)
     elif command == "enroll":
         cmd_enroll(args, config)
+    elif command == "configure":
+        return run_config_wizard(args.config, allow_overwrite=True)
     else:
         parser.print_help()
         return 1

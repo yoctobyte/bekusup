@@ -15,6 +15,7 @@ class RunPolicyConfig:
     incomplete_suffix: str = ".incomplete"
     complete_marker: str = "SESSION_COMPLETE"
     max_parallel_hosts: int = 2
+    run_without_command: bool = False
 
 @dataclass
 class PathConfig:
@@ -58,7 +59,8 @@ def load_config(path: str) -> Config:
         min_free_space_gb=policy_data.get("min_free_space_gb", 20),
         incomplete_suffix=policy_data.get("incomplete_suffix", ".incomplete"),
         complete_marker=policy_data.get("complete_marker", "SESSION_COMPLETE"),
-        max_parallel_hosts=policy_data.get("max_parallel_hosts", 2)
+        max_parallel_hosts=policy_data.get("max_parallel_hosts", 2),
+        run_without_command=policy_data.get("run_without_command", False),
     )
 
     hosts = []

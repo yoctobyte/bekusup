@@ -8,35 +8,76 @@ class TestCliConvenienceFlow(unittest.TestCase):
     @patch("builtins.print")
     @patch("bekusup.cli.cmd_run")
     @patch("bekusup.cli.load_config")
+    @patch("builtins.input", return_value="")
     @patch("bekusup.cli.os.path.exists")
-    def test_main_without_args_defaults_to_run_when_config_exists(
-        self, mock_exists, mock_load_config, mock_cmd_run, mock_print
+    def test_main_without_args_menu_defaults_to_run_when_config_exists(
+        self, mock_exists, mock_input, mock_load_config, mock_cmd_run, mock_print
     ):
         mock_exists.return_value = True
-        mock_load_config.return_value = MagicMock()
+        config = MagicMock()
+        config.run_policy.run_without_command = False
+        mock_load_config.return_value = config
 
         rc = cli.main([])
 
         self.assertEqual(rc, 0)
-        mock_load_config.assert_called_once_with("config.yaml")
+        self.assertGreaterEqual(mock_load_config.call_count, 1)
         mock_cmd_run.assert_called_once()
         args_used = mock_cmd_run.call_args[0][0]
         self.assertTrue(cli.resolve_dry_run(args_used))
 
     @patch("builtins.print")
-    @patch("bekusup.cli.run_init_wizard")
-    @patch("builtins.input", return_value="1")
+    @patch("bekusup.cli.cmd_run")
+    @patch("bekusup.cli.load_config")
+    @patch("builtins.input")
     @patch("bekusup.cli.os.path.exists")
-    def test_main_without_args_routes_to_init_menu_when_config_missing(
-        self, mock_exists, mock_input, mock_run_init, mock_print
+    def test_main_without_args_can_auto_run_when_config_says_so(
+        self, mock_exists, mock_input, mock_load_config, mock_cmd_run, mock_print
     ):
-        mock_exists.return_value = False
-        mock_run_init.return_value = 0
+        mock_exists.return_value = True
+        config = MagicMock()
+        config.run_policy.run_without_command = True
+        mock_load_config.return_value = config
 
         rc = cli.main([])
 
         self.assertEqual(rc, 0)
-        mock_run_init.assert_called_once_with("config.yaml")
+        mock_input.assert_not_called()
+        mock_cmd_run.assert_called_once()
+
+    @patch("builtins.print")
+    @patch("bekusup.cli.run_config_wizard")
+    @patch("builtins.input", return_value="")
+    @patch("bekusup.cli.os.path.exists")
+    def test_main_without_args_routes_to_init_menu_when_config_missing(
+        self, mock_exists, mock_input, mock_run_wizard, mock_print
+    ):
+        mock_exists.return_value = False
+        mock_run_wizard.return_value = 0
+
+        rc = cli.main([])
+
+        self.assertEqual(rc, 0)
+        mock_run_wizard.assert_called_once_with("config.yaml", allow_overwrite=False)
+
+    @patch("builtins.print")
+    @patch("bekusup.cli.run_config_wizard")
+    @patch("bekusup.cli.load_config")
+    @patch("builtins.input", return_value="4")
+    @patch("bekusup.cli.os.path.exists")
+    def test_main_without_args_can_reconfigure_existing_config(
+        self, mock_exists, mock_input, mock_load_config, mock_wizard, mock_print
+    ):
+        mock_exists.return_value = True
+        config = MagicMock()
+        config.run_policy.run_without_command = False
+        mock_load_config.return_value = config
+        mock_wizard.return_value = 0
+
+        rc = cli.main([])
+
+        self.assertEqual(rc, 0)
+        mock_wizard.assert_called_once_with("config.yaml", allow_overwrite=True)
 
     @patch("builtins.print")
     @patch("bekusup.transports.get_provider")
@@ -81,6 +122,19 @@ class TestCliConvenienceFlow(unittest.TestCase):
         _, kwargs = mock_session_mgr.call_args
         self.assertTrue(kwargs["dry_run"])
         self.assertTrue(provider.sync.call_args.kwargs["dry_run"])
+
+    @patch("builtins.print")
+    @patch("bekusup.cli.write_yaml_atomic")
+    @patch("builtins.input", side_effect=["", "", "y"])
+    @patch("bekusup.cli.os.path.exists", return_value=False)
+    def test_run_config_wizard_can_enable_run_without_command(
+        self, mock_exists, mock_input, mock_write_yaml, mock_print
+    ):
+        rc = cli.run_config_wizard("config.yaml", allow_overwrite=False)
+
+        self.assertEqual(rc, 0)
+        written = mock_write_yaml.call_args[0][1]
+        self.assertTrue(written["run_policy"]["run_without_command"])
 
 
 if __name__ == "__main__":
