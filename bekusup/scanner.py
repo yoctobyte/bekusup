@@ -61,7 +61,7 @@ def scan_candidate_disks(label_contains: str):
         
     return candidates
 
-def get_verified_targets(config, store):
+def get_verified_targets(config, store, allow_mount=True):
     """
     Returns a list of (disk_node, mountpoint, serial, uuid, label).
     """
@@ -75,7 +75,11 @@ def get_verified_targets(config, store):
     from .store import verify_trust, get_disk_identity
     
     for disk in candidates:
-        mp = ensure_mounted(disk, config.destination.fallback_mount_root)
+        mp = ensure_mounted(
+            disk,
+            config.destination.fallback_mount_root,
+            allow_mount=allow_mount,
+        )
         ok, msg = verify_trust(disk, mp, store)
         if not ok:
             print(f"Skipping /dev/{disk.get('name')}: {msg}", file=sys.stderr)
@@ -116,7 +120,7 @@ def resolve_target_disk(config):
     return candidates[0]
 
 
-def ensure_mounted(disk, fallback_mount_root):
+def ensure_mounted(disk, fallback_mount_root, allow_mount=True):
     """Ensures a disk is mounted and returns the active mountpoint."""
     mounts = []
     if "mountpoints" in disk and disk["mountpoints"]:
@@ -133,6 +137,14 @@ def ensure_mounted(disk, fallback_mount_root):
             print(f"Error: Target {mp} is mounted but not writable by the current user.", file=sys.stderr)
             sys.exit(1)
             
+    if not allow_mount:
+        print(
+            f"Error: /dev/{disk.get('name')} is not mounted. Dry-run mode will not mount disks automatically; "
+            "mount it manually first.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     # Attempt to mount
     dev_path = f"/dev/{disk.get('name')}"
     mount_target = os.path.join(fallback_mount_root, disk.get('label', disk.get('uuid', 'unknown')))

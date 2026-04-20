@@ -4,15 +4,17 @@ import threading
 from datetime import datetime
 
 class SessionManager:
-    def __init__(self, target_mount, config, store, drive_id):
+    def __init__(self, target_mount, config, store, drive_id, dry_run=False):
         self.target_mount = target_mount
         self.config = config
         self.store = store
         self.drive_id = drive_id
+        self.dry_run = dry_run
         self.lock = threading.Lock()
         
         self.sessions_dir = os.path.join(target_mount, "sessions")
-        os.makedirs(self.sessions_dir, exist_ok=True)
+        if not self.dry_run:
+            os.makedirs(self.sessions_dir, exist_ok=True)
         
         self.timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
         self.session_name = f"{self.timestamp}{self.config.run_policy.incomplete_suffix}"
@@ -27,6 +29,8 @@ class SessionManager:
         self.snapshot_base = None
         
     def find_snapshot_base(self):
+        if not os.path.isdir(self.sessions_dir):
+            return None
         complete_marker = self.config.run_policy.complete_marker
         candidates = []
         for d in os.listdir(self.sessions_dir):
@@ -47,10 +51,14 @@ class SessionManager:
             print(f"Error: Target drive has only {free_gb:.2f}GB free. Minimum required is {self.config.run_policy.min_free_space_gb}GB.")
             return False
             
-        os.makedirs(self.session_dir, exist_ok=True)
         self.snapshot_base = self.find_snapshot_base()
         if self.snapshot_base:
             print(f"Using previous session as snapshot base: {os.path.basename(self.snapshot_base)}")
+        if self.dry_run:
+            print(f"Dry-run session path would be: {self.session_dir}")
+            return True
+
+        os.makedirs(self.session_dir, exist_ok=True)
         
         return True
 
@@ -69,6 +77,10 @@ class SessionManager:
                     all_hosts_success = False
 
             self.manifest["outcome"] = "complete" if all_hosts_success else "complete_with_warnings"
+
+            if self.dry_run:
+                print(f"Dry-run session outcome: {self.manifest['outcome']}")
+                return
             
             manifest_path = os.path.join(self.session_dir, "manifest.json")
             with open(manifest_path, 'w') as f:

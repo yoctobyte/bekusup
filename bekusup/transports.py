@@ -6,7 +6,7 @@ class SyncProvider:
     def __init__(self, host_config):
         self.host = host_config
 
-    def sync(self, source: str, dest: str, snapshot_base: str = None) -> bool:
+    def sync(self, source: str, dest: str, snapshot_base: str = None, dry_run: bool = False) -> bool:
         raise NotImplementedError
 
     def parse_uri(self):
@@ -26,17 +26,23 @@ class SyncProvider:
         return remote, use_sshpass, password
 
 class RsyncProvider(SyncProvider):
-    def sync(self, source: str, dest: str, snapshot_base: str = None) -> bool:
+    def sync(self, source: str, dest: str, snapshot_base: str = None, dry_run: bool = False) -> bool:
         remote, use_sshpass, password = self.parse_uri()
         cmd = ["rsync", "-aH", "--info=progress2", "--delete"]
+        if dry_run:
+            cmd.append("--dry-run")
         
         if self.host.bandwidth_limit_kbps > 0:
             cmd.append(f"--bwlimit={self.host.bandwidth_limit_kbps}")
             
         if snapshot_base and os.path.exists(snapshot_base):
-            # Evaluate spatial storage capacity dynamically via block id
-            os.makedirs(dest, exist_ok=True)
-            if os.stat(snapshot_base).st_dev == os.stat(dest).st_dev:
+            compare_path = dest
+            if not os.path.exists(compare_path):
+                compare_path = os.path.dirname(compare_path) or "."
+            if not dry_run:
+                os.makedirs(dest, exist_ok=True)
+                compare_path = dest
+            if os.stat(snapshot_base).st_dev == os.stat(compare_path).st_dev:
                 cmd.append(f"--link-dest={snapshot_base}")
             else:
                 cmd.append(f"--copy-dest={snapshot_base}")
@@ -44,7 +50,8 @@ class RsyncProvider(SyncProvider):
         remote_source = f"{remote}:{source}" if self.host.transport == "ssh" else source
         
         # Ensure destination dir exists
-        os.makedirs(dest, exist_ok=True)
+        if not dry_run:
+            os.makedirs(dest, exist_ok=True)
         
         # rsync logic: we want to sync the *contents* or the folder into dest.
         # Adding a trailing slash to source means "copy contents of"
@@ -73,7 +80,10 @@ class RsyncProvider(SyncProvider):
             return False
 
 class ScpProvider(SyncProvider):
-    def sync(self, source: str, dest: str, snapshot_base: str = None) -> bool:
+    def sync(self, source: str, dest: str, snapshot_base: str = None, dry_run: bool = False) -> bool:
+        if dry_run:
+            print(f"[Scp] Dry-run requested for {self.host.name}; SCP fallback cannot preview safely.")
+            return True
         remote, use_sshpass, password = self.parse_uri()
         cmd = ["scp", "-r"]
         
