@@ -89,6 +89,33 @@ def get_verified_targets(config, store):
         
     return targets
 
+def resolve_target_disk(config):
+    """Return the single eligible candidate disk for enrollment.
+
+    Refuses if zero or more than one candidate matches — enrollment is a
+    one-disk-at-a-time operation, so ambiguity is rejected rather than
+    guessed.
+    """
+    candidates = scan_candidate_disks(config.destination.label_contains)
+    if not candidates:
+        print(
+            f"Error: No eligible disks found with label containing "
+            f"'{config.destination.label_contains}'. Check that the disk is "
+            f"plugged in and that its partition label matches.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if len(candidates) > 1:
+        names = ", ".join(f"/dev/{d.get('name')}" for d in candidates)
+        print(
+            f"Error: Found {len(candidates)} eligible disks ({names}). "
+            f"Enroll one disk at a time — disconnect the others first.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return candidates[0]
+
+
 def ensure_mounted(disk, fallback_mount_root):
     """Ensures a disk is mounted and returns the active mountpoint."""
     mounts = []

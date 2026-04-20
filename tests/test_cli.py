@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch, MagicMock, call
-from bekusup.cli import cmd_run, is_host_online
+from bekusup.cli import cmd_run, cmd_enroll, is_host_online
 
 @pytest.fixture
 def mock_config():
@@ -177,6 +177,54 @@ def test_cmd_run_freshness_ordering(
 @patch('bekusup.scanner.get_verified_targets')
 @patch('bekusup.store.IndexStore')
 @patch('bekusup.session.SessionManager')
+def test_cmd_run_freshness_counts_complete_with_warnings(
+    mock_session_mgr, mock_index_cls, mock_get_targets,
+    mock_get_provider, mock_online, mock_makedirs, mock_exists,
+):
+    """A drive whose latest finalized session is complete_with_warnings
+    must still count as 'recently used' for freshness ordering."""
+    mock_get_targets.return_value = [
+        ({"name": "sda"}, "/mnt/A", "serial-A", "uuid-A", "labA"),
+        ({"name": "sdb"}, "/mnt/B", "serial-B", "uuid-B", "labB"),
+    ]
+
+    store_instance = MagicMock()
+    def get_drive(drive_id):
+        if drive_id == "serial-A":
+            # A's only session is complete_with_warnings — must still count
+            return {"sessions": {"s1": {"outcome": "complete_with_warnings", "timestamp": 500}}}
+        if drive_id == "serial-B":
+            return {"sessions": {"s1": {"outcome": "complete", "timestamp": 100}}}
+        return None
+    store_instance.get_drive.side_effect = get_drive
+    mock_index_cls.return_value = store_instance
+
+    call_order = []
+    def mk(mp, cfg, store, drive_id):
+        call_order.append(mp)
+        sm = MagicMock()
+        sm.begin_session.return_value = False
+        return sm
+    mock_session_mgr.side_effect = mk
+
+    cfg = MagicMock()
+    cfg.hosts = []
+    cfg.run_policy.max_parallel_hosts = 1
+
+    cmd_run(None, cfg)
+
+    assert call_order == ["/mnt/A", "/mnt/B"], (
+        f"A's complete_with_warnings session (ts=500) must beat B's complete (ts=100); got {call_order}"
+    )
+
+
+@patch('bekusup.cli.os.path.exists', return_value=True)
+@patch('bekusup.cli.os.makedirs')
+@patch('bekusup.cli.is_host_online', return_value=True)
+@patch('bekusup.transports.get_provider')
+@patch('bekusup.scanner.get_verified_targets')
+@patch('bekusup.store.IndexStore')
+@patch('bekusup.session.SessionManager')
 def test_cmd_run_cross_drive_copy_dest(
     mock_session_mgr, mock_index_cls, mock_get_targets,
     mock_get_provider, mock_online, mock_makedirs, mock_exists,
@@ -284,3 +332,50 @@ def test_cmd_run_partial_a_preserves_b_reuse_for_succeeded_hosts(
     assert h2_b.kwargs["snapshot_base"] is None, (
         "h2 failed on A, so B must NOT reuse A as cache for h2"
     )
+
+
+@patch('bekusup.store.write_marker_file')
+@patch('bekusup.store.IndexStore')
+@patch('bekusup.scanner.ensure_mounted')
+@patch('bekusup.scanner.scan_candidate_disks')
+def test_cmd_enroll_smoke(mock_scan, mock_mount, mock_index_cls, mock_write_marker):
+    """Regression test: cmd_enroll must reach write_marker_file + enroll_drive
+    without ImportError. Exercises the real resolve_target_disk in scanner.py.
+    """
+    mock_scan.return_value = [{
+        "name": "sdb", "label": "my_backup", "serial": "S1", "uuid": "U1",
+    }]
+    mock_mount.return_value = "/mnt/backup"
+    mock_index_cls.return_value.enroll_drive.return_value = "S1"
+
+    cfg = MagicMock()
+    cfg.destination.label_contains = "backup"
+    cfg.destination.fallback_mount_root = "/mnt"
+
+    cmd_enroll(None, cfg)
+
+    mock_write_marker.assert_called_once_with("/mnt/backup", "S1", "U1", "my_backup")
+    mock_index_cls.return_value.enroll_drive.assert_called_once_with("S1", "U1", "my_backup")
+
+
+@patch('bekusup.store.write_marker_file')
+@patch('bekusup.store.IndexStore')
+@patch('bekusup.scanner.ensure_mounted')
+@patch('bekusup.scanner.scan_candidate_disks')
+def test_cmd_enroll_refuses_identityless_disk(mock_scan, mock_mount, mock_index_cls, mock_write_marker):
+    """A disk with no serial and no UUID must be rejected before the marker
+    file is written to it."""
+    mock_scan.return_value = [{
+        "name": "sdb", "label": "sketchy_backup", "serial": "", "uuid": "",
+    }]
+    mock_mount.return_value = "/mnt/backup"
+
+    cfg = MagicMock()
+    cfg.destination.label_contains = "backup"
+    cfg.destination.fallback_mount_root = "/mnt"
+
+    with pytest.raises(SystemExit):
+        cmd_enroll(None, cfg)
+
+    mock_write_marker.assert_not_called()
+    mock_index_cls.return_value.enroll_drive.assert_not_called()

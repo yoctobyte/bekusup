@@ -33,7 +33,6 @@ No new runtime dependencies. `pytest` remains the only test-time requirement bey
 
 - **Stale lock detection.** `RunLock` still assumes the OS releases `fcntl` locks when the process dies. If the lock file outlives its holder in a pathological scenario (NFS, some container runtimes), a fresh run will refuse to start with no guidance. A PID-liveness check would be cheap to add.
 - **`scan` does not show per-host history for all hosts against all enrolled drives.** It shows the single most recent successful drive per host in the "GLOBAL HOST COVERAGE" section, which is what the operator usually wants, but `drives_with_successful_host` is not wired into the display yet.
-- **`freshness` in `cmd_run` only counts `outcome == "complete"` sessions** (`bekusup/cli.py:31`). A drive whose latest session is `complete_with_warnings` will be treated as freshness=0 for ordering purposes. A `complete_with_warnings` session is still a valid link-dest base for the hosts that succeeded on it, so this is arguably too strict. Not fixed in this round.
 - **No notifications.** No Slack, email, or webhook integration on `failed` / `complete_with_warnings`.
 - **No auto-unmount / eject** after `SessionManager.finalize`. `config.destination.auto_unmount` exists in the config schema but nothing reads it.
 

@@ -46,12 +46,11 @@ def cmd_run(args, config):
             if not info or not info.get("sessions"):
                 return 0
             
-            # Fetch all completion times
             completed_times = []
             for s in info["sessions"].values():
-                if s.get("outcome") == "complete":
+                if s.get("outcome") in ("complete", "complete_with_warnings"):
                     completed_times.append(s.get("timestamp", 0))
-                    
+
             return max(completed_times) if completed_times else 0
             
         targets = sorted(targets, key=freshness, reverse=True)
