@@ -51,8 +51,28 @@ def cmd_run(args, config):
                 foreign_snapshot_base = completed_sessions[0]
                 print(f"Using Cross-Drive Cache (Copy-Dest) from {os.path.basename(foreign_snapshot_base)}")
                 
+            def is_host_online(uri):
+                if not uri or not uri.startswith("ssh://"):
+                    return True
+                import subprocess
+                host_part = uri.replace("ssh://", "", 1)
+                if "@" in host_part:
+                    host_part = host_part.split("@")[-1]
+                try:
+                    # 2-second timeout ping replacing exhaustive network stalls
+                    subprocess.run(["nc", "-z", "-w", "2", host_part, "22"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    return True
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    return False
+                    
             def sync_host(host):
                 print(f"Starting backup for host: {host.name}")
+                if not is_host_online(host.uri):
+                    status = "unreachable"
+                    session.record_host_status(host.name, status, "Failed 2-second reachability probe.")
+                    print(f"Skipping host {host.name} [{status}]")
+                    return status
+
                 provider = get_provider(host)
                 host_dest = session.get_host_dest_dir(host.name)
                 os.makedirs(host_dest, exist_ok=True)
@@ -96,32 +116,43 @@ def cmd_run(args, config):
 def cmd_scan(args, config):
     from .scanner import scan_candidate_disks
     from .store import IndexStore, get_disk_identity
+    print("================================")
+    print(" BEKUSUP - OPERATOR DASHBOARD")
+    print("================================")
     print("Scanning for eligible backup disks...")
     candidates = scan_candidate_disks(config.destination.label_contains)
     if not candidates:
-        print("No eligible candidate disks found.")
+        print("No eligible candidate disks found. Validate your mount labels.")
         return
         
     store = IndexStore()
     
     for c in candidates:
-        print("-----------------------------")
-        print(f"Candidate: /dev/{c.get('name')} | Label: {c.get('label')} | SIZE: {c.get('size')} | MP: {c.get('mountpoints') or c.get('mountpoint')}")
+        print("\n-----------------------------")
+        print(f"💽 Target: /dev/{c.get('name')}")
+        print(f"   Label: {c.get('label')}")
+        print(f"   Size:  {c.get('size')}")
+        print(f"   Mount: {c.get('mountpoints') or c.get('mountpoint')}")
         
         serial, uuid, label = get_disk_identity(c)
         drive_id = serial if serial else f"{uuid}-{label}"
-        
         info = store.get_drive(drive_id)
+        
         if info:
-            print(f"Trust Status: ENROLLED")
+            print(f"   Trust: ENROLLED ✅")
             sessions = info.get('sessions', {})
-            print(f"Known Sessions: {len(sessions)}")
+            print(f"   Session History: {len(sessions)} records")
+            
             if sessions:
                 last_session = sorted(sessions.keys())[-1]
-                print(f"Last Session: {last_session} [{sessions[last_session]['outcome']}]")
+                s_data = sessions[last_session]
+                print(f"   Latest Run: {last_session} [{s_data.get('outcome')}]")
+                host_statuses = s_data.get('hosts', {})
+                success_count = sum(1 for h in host_statuses.values() if h['status'] == 'succeeded')
+                print(f"   Coverage: {success_count}/{len(host_statuses)} Hosts Available")
         else:
-            print("Trust Status: UNENROLLED (needs running `bekusup enroll`)")
-    print("-----------------------------")
+            print("   Trust: UNENROLLED ❌ (Requires `bekusup enroll` to reconcile database)")
+    print("\n================================")
 
 def cmd_enroll(args, config):
     from .scanner import resolve_target_disk, ensure_mounted

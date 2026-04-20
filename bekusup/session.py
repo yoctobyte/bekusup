@@ -1,5 +1,6 @@
 import os
 import json
+import threading
 from datetime import datetime
 
 class SessionManager:
@@ -8,6 +9,7 @@ class SessionManager:
         self.config = config
         self.store = store
         self.drive_id = drive_id
+        self.lock = threading.Lock()
         
         self.sessions_dir = os.path.join(target_mount, "sessions")
         os.makedirs(self.sessions_dir, exist_ok=True)
@@ -39,7 +41,6 @@ class SessionManager:
         return None
 
     def begin_session(self):
-        # Check free space
         st = os.statvfs(self.target_mount)
         free_gb = (st.f_bavail * st.f_frsize) / (1024**3)
         if free_gb < self.config.run_policy.min_free_space_gb:
@@ -57,28 +58,28 @@ class SessionManager:
         return os.path.join(self.session_dir, host_name)
         
     def record_host_status(self, host_name, status, details=None):
-        self.manifest["hosts"][host_name] = {"status": status, "details": details}
+        with self.lock:
+            self.manifest["hosts"][host_name] = {"status": status, "details": details}
 
     def finalize(self):
-        # Assume if we reached finalize, the run wasn't critically interrupted.
-        all_hosts_success = True
-        for host, status in self.manifest["hosts"].items():
-            if status["status"] != "succeeded":
-                all_hosts_success = False
+        with self.lock:
+            all_hosts_success = True
+            for host, status_obj in self.manifest["hosts"].items():
+                if status_obj["status"] != "succeeded":
+                    all_hosts_success = False
 
-        self.manifest["outcome"] = "complete" if all_hosts_success else "complete_with_warnings"
-        
-        manifest_path = os.path.join(self.session_dir, "manifest.json")
-        with open(manifest_path, 'w') as f:
-            json.dump(self.manifest, f, indent=2)
+            self.manifest["outcome"] = "complete" if all_hosts_success else "complete_with_warnings"
             
-        # Write complete marker
-        marker_path = os.path.join(self.session_dir, self.config.run_policy.complete_marker)
-        with open(marker_path, 'w') as f:
-            f.write(self.timestamp)
+            manifest_path = os.path.join(self.session_dir, "manifest.json")
+            with open(manifest_path, 'w') as f:
+                json.dump(self.manifest, f, indent=2)
+                
+            marker_path = os.path.join(self.session_dir, self.config.run_policy.complete_marker)
+            with open(marker_path, 'w') as f:
+                f.write(self.timestamp)
+                
+            final_dir = os.path.join(self.sessions_dir, self.timestamp)
+            os.rename(self.session_dir, final_dir)
             
-        final_dir = os.path.join(self.sessions_dir, self.timestamp)
-        os.rename(self.session_dir, final_dir)
-        
-        self.store.log_session(self.drive_id, self.timestamp, self.manifest["outcome"])
-        print(f"Session {self.timestamp} finalized with status: {self.manifest['outcome']}")
+            self.store.log_session(self.drive_id, self.timestamp, self.manifest["outcome"], self.manifest["hosts"])
+            print(f"Session {self.timestamp} finalized with status: {self.manifest['outcome']}")

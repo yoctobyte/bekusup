@@ -51,7 +51,11 @@ class RsyncProvider(SyncProvider):
         if not remote_source.endswith('/'):
             remote_source += '/'
             
-        cmd.extend([remote_source, dest])
+        dest_abs = os.path.abspath(dest)
+        if not dest_abs.endswith('/'):
+            dest_abs += '/'
+            
+        cmd.extend([remote_source, dest_abs])
         
         exec_cmd = cmd
         if use_sshpass and password:
@@ -64,24 +68,25 @@ class RsyncProvider(SyncProvider):
             subprocess.run(exec_cmd, check=True)
             return True
         except subprocess.CalledProcessError as e:
-            print(f"Rsync failed for {self.host.name}: {e}", file=sys.stderr)
+            err_msg = str(e).replace(password, "***") if use_sshpass and password else str(e)
+            print(f"Rsync failed for {self.host.name}: {err_msg}", file=sys.stderr)
             return False
 
 class ScpProvider(SyncProvider):
     def sync(self, source: str, dest: str, snapshot_base: str = None) -> bool:
         remote, use_sshpass, password = self.parse_uri()
-        # SCP doesn't do snapshot logic easily, we fallback to pure full copy
-        # Also bandwidth limit options exist for scp: -l kpbs
         cmd = ["scp", "-r"]
         
         if self.host.bandwidth_limit_kbps > 0:
-            # scp limit is in Kbit/s
             cmd.extend(["-l", str(self.host.bandwidth_limit_kbps * 8)])
             
         remote_source = f"{remote}:{source}" if self.host.transport == "ssh" else source
         
-        os.makedirs(dest, exist_ok=True)
-        cmd.extend([remote_source, dest])
+        dest_abs = os.path.abspath(dest)
+        if not dest_abs.endswith('/'):
+            dest_abs += '/'
+        os.makedirs(dest_abs, exist_ok=True)
+        cmd.extend([remote_source, dest_abs])
         
         exec_cmd = cmd
         if use_sshpass and password:
@@ -94,7 +99,8 @@ class ScpProvider(SyncProvider):
             subprocess.run(exec_cmd, check=True)
             return True
         except subprocess.CalledProcessError as e:
-            print(f"SCP failed for {self.host.name}: {e}", file=sys.stderr)
+            err_msg = str(e).replace(password, "***") if use_sshpass and password else str(e)
+            print(f"SCP failed for {self.host.name}: {err_msg}", file=sys.stderr)
             return False
 
 def get_provider(host_config):
