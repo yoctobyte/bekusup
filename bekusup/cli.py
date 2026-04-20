@@ -1,6 +1,28 @@
 import argparse
+import os
+import subprocess
 import sys
 from .config import load_config
+
+
+def is_host_online(uri):
+    if not uri or not uri.startswith("ssh://"):
+        return True
+    host_part = uri.replace("ssh://", "", 1)
+    port = "22"
+    if "@" in host_part:
+        host_part = host_part.split("@")[-1]
+    if ":" in host_part:
+        host_part, port = host_part.split(":", 1)
+    try:
+        subprocess.run(
+            ["nc", "-z", "-w", "2", host_part, port],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
 
 def cmd_run(args, config):
     from .lock import RunLock
@@ -9,7 +31,6 @@ def cmd_run(args, config):
     from .session import SessionManager
     from .transports import get_provider
     import concurrent.futures
-    import os
 
     with RunLock():
         print(f"Running bekusup with {len(config.hosts)} hosts configured.")
@@ -44,24 +65,7 @@ def cmd_run(args, config):
             session = SessionManager(mp, config, store, drive_id)
             if not session.begin_session():
                 continue
-                
-            def is_host_online(uri):
-                if not uri or not uri.startswith("ssh://"):
-                    return True
-                import subprocess
-                host_part = uri.replace("ssh://", "", 1)
-                port = "22"
-                if "@" in host_part:
-                    host_part = host_part.split("@")[-1]
-                if ":" in host_part:
-                    host_part, port = host_part.split(":", 1)
-                try:
-                    # 2-second timeout ping honoring custom port extractions
-                    subprocess.run(["nc", "-z", "-w", "2", host_part, port], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    return True
-                except (subprocess.CalledProcessError, FileNotFoundError):
-                    return False
-                    
+
             def sync_host(host):
                 print(f"Starting backup for host: {host.name}")
                 if not is_host_online(host.uri):
@@ -184,13 +188,26 @@ def cmd_enroll(args, config):
     disk = resolve_target_disk(config)
     print(f"Target selected: /dev/{disk.get('name')} [label: {disk.get('label')}]")
     mp = ensure_mounted(disk, config.destination.fallback_mount_root)
-    
+
     serial, uuid, label = get_disk_identity(disk)
     print(f"Identity -> Serial: {serial}, UUID: {uuid}")
-    
+
+    if not serial and not uuid:
+        print(
+            "Enrollment refused: disk exposes neither a Serial nor a filesystem UUID.\n"
+            "  Run `lsblk -o NAME,SERIAL,UUID` to confirm; a disk with no stable identity\n"
+            "  cannot be tracked safely across reboots or dock swaps.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     write_marker_file(mp, serial, uuid, label)
     store = IndexStore()
-    drive_id = store.enroll_drive(serial, uuid, label)
+    try:
+        drive_id = store.enroll_drive(serial, uuid, label)
+    except ValueError as e:
+        print(f"Enrollment refused: {e}", file=sys.stderr)
+        sys.exit(1)
     print(f"Enrolled successfully! Drive ID recorded locally as: {drive_id}")
 
 def main():

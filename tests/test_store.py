@@ -87,3 +87,49 @@ def test_get_last_success_for_host(tmp_path):
     d_id, s_id, t = store.get_last_success_for_host("hostA")
     assert d_id == did
     assert s_id == "sess1"
+
+
+def test_get_last_success_for_host_picks_newest_across_drives(tmp_path):
+    store = IndexStore(tmp_path / "index.json")
+    did_a = store.enroll_drive("A-serial", "A-uuid", "A")
+    did_b = store.enroll_drive("B-serial", "B-uuid", "B")
+
+    # Drive A backed up hostX at t=100, drive B backed up hostX at t=200
+    with patch('bekusup.store.time.time', return_value=100):
+        store.log_session(did_a, "sess_a", "complete", {"hostX": {"status": "succeeded"}})
+    with patch('bekusup.store.time.time', return_value=200):
+        store.log_session(did_b, "sess_b", "complete", {"hostX": {"status": "succeeded"}})
+
+    d_id, s_id, ts = store.get_last_success_for_host("hostX")
+    assert d_id == did_b
+    assert s_id == "sess_b"
+    assert ts == 200
+
+
+def test_drives_with_successful_host(tmp_path):
+    store = IndexStore(tmp_path / "index.json")
+    did_a = store.enroll_drive("A-serial", "A-uuid", "A")
+    did_b = store.enroll_drive("B-serial", "B-uuid", "B")
+    did_c = store.enroll_drive("C-serial", "C-uuid", "C")
+
+    store.log_session(did_a, "s1", "complete", {"hostX": {"status": "succeeded"}})
+    store.log_session(did_b, "s1", "complete_with_warnings", {"hostX": {"status": "partial"}})
+    store.log_session(did_c, "s1", "complete_with_warnings", {"hostX": {"status": "failed"}})
+
+    drives = store.drives_with_successful_host("hostX")
+    assert set(drives) == {did_a, did_b}
+    assert did_c not in drives
+
+
+def test_most_recent_drive_for_host(tmp_path):
+    store = IndexStore(tmp_path / "index.json")
+    did_a = store.enroll_drive("A-serial", "A-uuid", "A")
+    did_b = store.enroll_drive("B-serial", "B-uuid", "B")
+
+    with patch('bekusup.store.time.time', return_value=50):
+        store.log_session(did_a, "s1", "complete", {"hostY": {"status": "succeeded"}})
+    with patch('bekusup.store.time.time', return_value=300):
+        store.log_session(did_b, "s1", "complete", {"hostY": {"status": "succeeded"}})
+
+    assert store.most_recent_drive_for_host("hostY") == did_b
+    assert store.most_recent_drive_for_host("nobody") is None

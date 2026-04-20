@@ -52,7 +52,7 @@ class IndexStore:
         best_drive = None
         best_session = None
         best_time = 0
-        
+
         with self.lock:
             for drive_id, drive_data in self.data["drives"].items():
                 for session_id, session_data in drive_data.get("sessions", {}).items():
@@ -63,8 +63,23 @@ class IndexStore:
                             best_time = ts
                             best_drive = drive_id
                             best_session = session_id
-                            
+
         return best_drive, best_session, best_time
+
+    def drives_with_successful_host(self, host_name: str):
+        result = []
+        with self.lock:
+            for drive_id, drive_data in self.data["drives"].items():
+                for session_data in drive_data.get("sessions", {}).values():
+                    host_info = session_data.get("hosts", {}).get(host_name)
+                    if host_info and host_info.get("status") in ("succeeded", "partial"):
+                        result.append(drive_id)
+                        break
+        return result
+
+    def most_recent_drive_for_host(self, host_name: str):
+        drive_id, _, _ = self.get_last_success_for_host(host_name)
+        return drive_id
 
     def log_session(self, drive_id: str, session_id: str, outcome: str, hosts_data: dict):
         with self.lock:
