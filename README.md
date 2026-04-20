@@ -42,6 +42,14 @@ cd bekusup
 pip install -r requirements.txt
 ```
 
+### Test Prerequisites
+
+On Debian/Ubuntu systems, install `pytest` with:
+
+```bash
+sudo apt install python3-pytest
+```
+
 ## Workflows and Variations
 
 ### 1. The Single Swap Rotation

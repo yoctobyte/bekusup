@@ -1,0 +1,89 @@
+import pytest
+import os
+import json
+from unittest.mock import patch
+from bekusup.store import IndexStore, verify_trust
+
+def test_index_store_log_session(tmp_path):
+    index_file = tmp_path / "index.json"
+    store = IndexStore(index_file=str(index_file))
+    
+    did = store.enroll_drive("123", "uuid1", "label1")
+    
+    hosts_data = {
+        "laptop1": {"status": "succeeded"},
+        "server1": {"status": "unreachable"}
+    }
+    
+    store.log_session(did, "session_test_1", "complete_with_warnings", hosts_data)
+    
+    with open(index_file, "r") as f:
+        data = json.load(f)
+        
+    sess = data["drives"][did]["sessions"]["session_test_1"]
+    assert sess["outcome"] == "complete_with_warnings"
+    assert "laptop1" in sess["hosts"]
+    assert sess["hosts"]["laptop1"]["status"] == "succeeded"
+
+def test_verify_trust_missing_marker(tmp_path):
+    store = IndexStore(tmp_path / "index.json")
+    # Drive not in index
+    ok, msg = verify_trust({"serial": "111", "uuid": "222", "label": "L"}, str(tmp_path), store)
+    assert not ok
+    assert "No marker file found" in msg
+
+def test_verify_trust_index_known_marker_missing(tmp_path):
+    store = IndexStore(tmp_path / "index.json")
+    store.enroll_drive("111", "222", "L")
+    
+    ok, msg = verify_trust({"serial": "111", "uuid": "222", "label": "L"}, str(tmp_path), store)
+    assert not ok
+    assert "missing marker file!" in msg
+
+@patch('bekusup.store.read_marker_file')
+def test_verify_trust_marker_present_but_unenrolled(mock_read, tmp_path):
+    mock_read.return_value = {"serial": "111", "uuid": "222"}
+    store = IndexStore(tmp_path / "index.json")
+    
+    ok, msg = verify_trust({"serial": "111", "uuid": "222", "label": "L"}, str(tmp_path), store)
+    assert not ok
+    assert "unrecognized by this machine" in msg
+
+@patch('bekusup.store.read_marker_file')
+def test_verify_trust_hard_rejects_spoofed_uuid(mock_read, tmp_path):
+    # The disk has marker UUID "222"
+    mock_read.return_value = {"serial": "111", "uuid": "222"}
+    store = IndexStore(tmp_path / "index.json")
+    store.enroll_drive("111", "222", "L")
+    
+    # BUT lsblk physical node returns UUID "999" (spoofing)
+    ok, msg = verify_trust({"serial": "111", "uuid": "999", "label": "L"}, str(tmp_path), store)
+    assert not ok
+    assert "HARD REJECT" in msg
+    assert "Marker UUID '222' conflicts with actual UUID '999'" in msg
+
+@patch('bekusup.store.read_marker_file')
+def test_verify_trust_success(mock_read, tmp_path):
+    mock_read.return_value = {"serial": "111", "uuid": "222"}
+    store = IndexStore(tmp_path / "index.json")
+    store.enroll_drive("111", "222", "L")
+    
+    ok, msg = verify_trust({"serial": "111", "uuid": "222", "label": "L"}, str(tmp_path), store)
+    assert ok
+
+def test_enroll_drive_empty_ids(tmp_path):
+    store = IndexStore(tmp_path / "index.json")
+    with pytest.raises(ValueError, match="Hardware returned no Serial or UUID"):
+        store.enroll_drive("", "", "L")
+
+def test_get_last_success_for_host(tmp_path):
+    store = IndexStore(tmp_path / "index.json")
+    did = store.enroll_drive("123", "uuid1", "label1")
+    
+    hosts_data = {"hostA": {"status": "succeeded"}}
+    store.log_session(did, "sess1", "complete", hosts_data)
+    
+    # Needs a mock timestamp essentially, log_session writes timestamp
+    d_id, s_id, t = store.get_last_success_for_host("hostA")
+    assert d_id == did
+    assert s_id == "sess1"

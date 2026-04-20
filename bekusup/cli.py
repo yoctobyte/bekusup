@@ -34,7 +34,7 @@ def cmd_run(args, config):
             return max(completed_times) if completed_times else 0
             
         targets = sorted(targets, key=freshness, reverse=True)
-        completed_sessions = []
+        host_cache_bases = {}
         
         # Sequentially loop the drives
         for disk, mp, serial, uuid, label in targets:
@@ -45,22 +45,19 @@ def cmd_run(args, config):
             if not session.begin_session():
                 continue
                 
-            # Smartass Caching Strategy
-            foreign_snapshot_base = None
-            if not session.snapshot_base and completed_sessions:
-                foreign_snapshot_base = completed_sessions[0]
-                print(f"Using Cross-Drive Cache (Copy-Dest) from {os.path.basename(foreign_snapshot_base)}")
-                
             def is_host_online(uri):
                 if not uri or not uri.startswith("ssh://"):
                     return True
                 import subprocess
                 host_part = uri.replace("ssh://", "", 1)
+                port = "22"
                 if "@" in host_part:
                     host_part = host_part.split("@")[-1]
+                if ":" in host_part:
+                    host_part, port = host_part.split(":", 1)
                 try:
-                    # 2-second timeout ping replacing exhaustive network stalls
-                    subprocess.run(["nc", "-z", "-w", "2", host_part, "22"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    # 2-second timeout ping honoring custom port extractions
+                    subprocess.run(["nc", "-z", "-w", "2", host_part, port], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     return True
                 except (subprocess.CalledProcessError, FileNotFoundError):
                     return False
@@ -73,11 +70,16 @@ def cmd_run(args, config):
                     print(f"Skipping host {host.name} [{status}]")
                     return status
 
+                foreign_snapshot_base = host_cache_bases.get(host.name)
+                if not session.snapshot_base and foreign_snapshot_base:
+                    print(f"Using Cross-Drive Cache (Copy-Dest) for {host.name} from {os.path.basename(foreign_snapshot_base)}")
+
                 provider = get_provider(host)
                 host_dest = session.get_host_dest_dir(host.name)
                 os.makedirs(host_dest, exist_ok=True)
                 
                 all_paths_ok = True
+                any_paths_ok = False
                 for path_cfg in host.paths:
                     dest_path = os.path.join(host_dest, path_cfg.dest_subdir)
                     
@@ -91,8 +93,16 @@ def cmd_run(args, config):
                     res = provider.sync(path_cfg.source, dest_path, snapshot_base=host_snapshot_base)
                     if not res:
                         all_paths_ok = False
+                    else:
+                        any_paths_ok = True
                 
-                status = "succeeded" if all_paths_ok else "failed"
+                if all_paths_ok:
+                    status = "succeeded"
+                elif any_paths_ok:
+                    status = "partial"
+                else:
+                    status = "failed"
+                    
                 session.record_host_status(host.name, status)
                 print(f"Finished backup for host: {host.name} [{status}]")
                 return status
@@ -109,9 +119,11 @@ def cmd_run(args, config):
                         session.record_host_status(host.name, "failed", str(e))
                         
             session.finalize()
-            if session.manifest["outcome"] == "complete":
+            if session.manifest["outcome"] in ("complete", "complete_with_warnings"):
                 final_dir = os.path.join(session.sessions_dir, session.timestamp)
-                completed_sessions.append(final_dir)
+                for h_name, h_stat in session.manifest["hosts"].items():
+                    if h_stat["status"] in ("succeeded", "partial"):
+                        host_cache_bases[h_name] = final_dir
 
 def cmd_scan(args, config):
     from .scanner import scan_candidate_disks
@@ -152,7 +164,18 @@ def cmd_scan(args, config):
                 print(f"   Coverage: {success_count}/{len(host_statuses)} Hosts Available")
         else:
             print("   Trust: UNENROLLED ❌ (Requires `bekusup enroll` to reconcile database)")
-    print("\n================================")
+    print("\n-----------------------------")
+    print(" 📡 GLOBAL HOST COVERAGE")
+    print("-----------------------------")
+    for host in config.hosts:
+        d_id, sid, stime = store.get_last_success_for_host(host.name)
+        if d_id:
+            import datetime
+            time_str = datetime.datetime.fromtimestamp(stime).strftime("%Y-%m-%d %H:%M:%S")
+            print(f"   [+] {host.name}: Drive '{d_id}'  ({time_str})")
+        else:
+            print(f"   [-] {host.name}: No successful backups found locally.")
+    print("================================")
 
 def cmd_enroll(args, config):
     from .scanner import resolve_target_disk, ensure_mounted

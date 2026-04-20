@@ -18,6 +18,10 @@ def get_block_devices():
 
 def is_system_device(node):
     """Heuristic to reject obvious internal/system disks."""
+    name = str(node.get("name", "")).lower()
+    if name.startswith("loop") or name.startswith("ram") or "mapper" in name or "crypto" in name:
+        return True
+        
     mounts = []
     if "mountpoints" in node and node["mountpoints"]:
         mounts.extend(node["mountpoints"])

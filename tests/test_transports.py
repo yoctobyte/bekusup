@@ -4,9 +4,10 @@ from bekusup.transports import RsyncProvider
 from bekusup.config import HostConfig
 
 class TestRsyncProvider(unittest.TestCase):
+    @patch('builtins.print')
     @patch('bekusup.transports.subprocess.run')
     @patch('bekusup.transports.os.makedirs')
-    def test_rsync_sync_sshpass(self, mock_dirs, mock_run):
+    def test_rsync_sync_sshpass(self, mock_dirs, mock_run, mock_print):
         host = HostConfig(name="test", transport="ssh", paths=[], uri="ssh://user:pass@10.0.0.1")
         provider = RsyncProvider(host)
         
@@ -19,11 +20,12 @@ class TestRsyncProvider(unittest.TestCase):
         self.assertIn("rsync", cmd_called)
         self.assertIn("user@10.0.0.1:/remote/src/", cmd_called)
 
+    @patch('builtins.print')
     @patch('bekusup.transports.os.stat')
     @patch('bekusup.transports.os.path.exists')
     @patch('bekusup.transports.subprocess.run')
     @patch('bekusup.transports.os.makedirs')
-    def test_rsync_sync_cross_drive_cache(self, mock_dirs, mock_run, mock_exists, mock_stat):
+    def test_rsync_sync_cross_drive_cache(self, mock_dirs, mock_run, mock_exists, mock_stat, mock_print):
         host = HostConfig(name="test", transport="ssh", paths=[], uri="ssh://10.0.0.1")
         provider = RsyncProvider(host)
         

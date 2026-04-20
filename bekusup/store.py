@@ -25,6 +25,9 @@ class IndexStore:
             json.dump(self.data, f, indent=2)
 
     def enroll_drive(self, serial: str, uuid: str, label: str):
+        if not serial and not uuid:
+            raise ValueError("Refusing enrollment: Hardware returned no Serial or UUID.")
+            
         with self.lock:
             drive_id = serial if serial else f"{uuid}-{label}"
             if drive_id not in self.data["drives"]:
@@ -44,6 +47,24 @@ class IndexStore:
     def get_drive(self, drive_id: str):
         with self.lock:
             return self.data["drives"].get(drive_id)
+            
+    def get_last_success_for_host(self, host_name: str):
+        best_drive = None
+        best_session = None
+        best_time = 0
+        
+        with self.lock:
+            for drive_id, drive_data in self.data["drives"].items():
+                for session_id, session_data in drive_data.get("sessions", {}).items():
+                    host_info = session_data.get("hosts", {}).get(host_name)
+                    if host_info and host_info.get("status") in ("succeeded", "partial"):
+                        ts = session_data.get("timestamp", 0)
+                        if ts > best_time:
+                            best_time = ts
+                            best_drive = drive_id
+                            best_session = session_id
+                            
+        return best_drive, best_session, best_time
 
     def log_session(self, drive_id: str, session_id: str, outcome: str, hosts_data: dict):
         with self.lock:
@@ -91,6 +112,9 @@ def verify_trust(disk_node, mountpoint, index: IndexStore):
         if index_known:
              return False, "Drive is in local index but missing marker file! Was formatting wiped? Re-enroll."
         return False, "No marker file found. Disk must be enrolled via 'bekusup enroll'."
+        
+    if not serial and not uuid:
+        return False, "HARD REJECT: Hardware presents no Serial or UUID, collision hazard."
         
     if marker:
         if not index_known:
