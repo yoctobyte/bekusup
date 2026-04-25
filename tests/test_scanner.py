@@ -1,7 +1,13 @@
 import unittest
 from unittest.mock import patch, MagicMock
 import pytest
-from bekusup.scanner import is_system_device, scan_candidate_disks, resolve_target_disk
+from bekusup.scanner import (
+    ensure_mounted,
+    is_system_device,
+    resolve_target_disk,
+    scan_candidate_disks,
+    unmount_if_mounted_by_bekusup,
+)
 
 class TestScanner(unittest.TestCase):
     def test_is_system_device(self):
@@ -28,6 +34,37 @@ class TestScanner(unittest.TestCase):
         candidates = scan_candidate_disks("backup")
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["name"], "sdb")
+
+    @patch('bekusup.scanner.os.access', return_value=True)
+    def test_ensure_mounted_existing_mount_returns_not_temporary(self, mock_access):
+        mp, temporary = ensure_mounted(
+            {"name": "sdb1", "mountpoints": ["/mnt/backup"]},
+            "/mnt/bekusup",
+        )
+
+        self.assertEqual(mp, "/mnt/backup")
+        self.assertFalse(temporary)
+
+    @patch('builtins.print')
+    @patch('bekusup.scanner.subprocess.run')
+    @patch('bekusup.scanner.os.makedirs')
+    def test_ensure_mounted_can_mount_and_reports_temporary(self, mock_makedirs, mock_run, mock_print):
+        mp, temporary = ensure_mounted(
+            {"name": "sdb1", "label": "backup_a", "mountpoints": []},
+            "/mnt/bekusup",
+            allow_mount=True,
+        )
+
+        self.assertEqual(mp, "/mnt/bekusup/backup_a")
+        self.assertTrue(temporary)
+        mock_run.assert_called_once_with(['sudo', '-n', 'mount', '/dev/sdb1', '/mnt/bekusup/backup_a'], check=True)
+
+    @patch('builtins.print')
+    @patch('bekusup.scanner.subprocess.run')
+    def test_unmount_if_mounted_by_bekusup_calls_umount(self, mock_run, mock_print):
+        unmount_if_mounted_by_bekusup("/mnt/bekusup/backup_a")
+
+        mock_run.assert_called_once_with(['sudo', '-n', 'umount', '/mnt/bekusup/backup_a'], check=True)
 
 if __name__ == '__main__':
     unittest.main()

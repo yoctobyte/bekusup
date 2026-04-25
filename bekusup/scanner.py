@@ -63,7 +63,7 @@ def scan_candidate_disks(label_contains: str):
 
 def get_verified_targets(config, store, allow_mount=True):
     """
-    Returns a list of (disk_node, mountpoint, serial, uuid, label).
+    Returns a list of (disk_node, mountpoint, serial, uuid, label, mounted_by_bekusup).
     """
     candidates = scan_candidate_disks(config.destination.label_contains)
     if not candidates:
@@ -75,7 +75,7 @@ def get_verified_targets(config, store, allow_mount=True):
     from .store import verify_trust, get_disk_identity
     
     for disk in candidates:
-        mp = ensure_mounted(
+        mp, mounted_by_bekusup = ensure_mounted(
             disk,
             config.destination.fallback_mount_root,
             allow_mount=allow_mount,
@@ -85,7 +85,7 @@ def get_verified_targets(config, store, allow_mount=True):
             print(f"Skipping /dev/{disk.get('name')}: {msg}", file=sys.stderr)
             continue
         serial, uuid, label = get_disk_identity(disk)
-        targets.append((disk, mp, serial, uuid, label))
+        targets.append((disk, mp, serial, uuid, label, mounted_by_bekusup))
         
     if not targets:
         print("Error: Candidate disks found but none were fully trusted/enrolled.", file=sys.stderr)
@@ -121,7 +121,12 @@ def resolve_target_disk(config):
 
 
 def ensure_mounted(disk, fallback_mount_root, allow_mount=True):
-    """Ensures a disk is mounted and returns the active mountpoint."""
+    """Ensures a disk is mounted.
+
+    Returns (mountpoint, mounted_by_bekusup). The second value is True only
+    when this call performed the mount and the caller may safely unmount it
+    afterward.
+    """
     mounts = []
     if "mountpoints" in disk and disk["mountpoints"]:
         mounts.extend([m for m in disk["mountpoints"] if m])
@@ -132,15 +137,14 @@ def ensure_mounted(disk, fallback_mount_root, allow_mount=True):
         # Ensure it is writable by current user
         mp = mounts[0]
         if os.access(mp, os.W_OK):
-            return mp
+            return mp, False
         else:
             print(f"Error: Target {mp} is mounted but not writable by the current user.", file=sys.stderr)
             sys.exit(1)
             
     if not allow_mount:
         print(
-            f"Error: /dev/{disk.get('name')} is not mounted. Dry-run mode will not mount disks automatically; "
-            "mount it manually first.",
+            f"Error: /dev/{disk.get('name')} is not mounted and mounting is disabled.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -154,10 +158,22 @@ def ensure_mounted(disk, fallback_mount_root, allow_mount=True):
         print(f"Attempting to mount {dev_path} to {mount_target}...")
         # Note: Depending on system config, mount may require sudo.
         subprocess.run(['sudo', '-n', 'mount', dev_path, mount_target], check=True)
-        return mount_target
+        return mount_target, True
     except subprocess.CalledProcessError:
         print(f"Error: Failed to safely mount {dev_path}. You may need to mount it manually.", file=sys.stderr)
         sys.exit(1)
     except PermissionError:
         print(f"Error: Permission denied creating fallback mount directory {mount_target}.", file=sys.stderr)
         sys.exit(1)
+
+
+def unmount_if_mounted_by_bekusup(mountpoint):
+    """Unmount a mountpoint that was created by bekusup during this run."""
+    try:
+        print(f"Unmounting temporary mount {mountpoint}...")
+        subprocess.run(['sudo', '-n', 'umount', mountpoint], check=True)
+    except subprocess.CalledProcessError:
+        print(
+            f"Warning: Failed to unmount temporary mount {mountpoint}. Please inspect it manually.",
+            file=sys.stderr,
+        )

@@ -20,7 +20,7 @@ def mock_config():
 @patch('subprocess.run')
 def test_cmd_run_host_unreachable(mock_sub_run, mock_session_mgr, mock_index, mock_get_targets, mock_get_provider, mock_config):
     # Simulate a drive being returned
-    mock_get_targets.return_value = [ ({"name": "sda"}, "/mnt/sda", "111", "222", "L") ]
+    mock_get_targets.return_value = [ ({"name": "sda"}, "/mnt/sda", "111", "222", "L", False) ]
     
     session_instance = MagicMock()
     session_instance.begin_session.return_value = True
@@ -47,7 +47,7 @@ def test_cmd_run_host_unreachable(mock_sub_run, mock_session_mgr, mock_index, mo
 @patch('bekusup.session.SessionManager')
 @patch('subprocess.run')
 def test_cmd_run_host_partial(mock_sub_run, mock_session_mgr, mock_index, mock_get_targets, mock_get_provider, mock_config):
-    mock_get_targets.return_value = [ ({"name": "sda"}, "/mnt/sda", "111", "222", "L") ]
+    mock_get_targets.return_value = [ ({"name": "sda"}, "/mnt/sda", "111", "222", "L", False) ]
     
     session_instance = MagicMock()
     session_instance.begin_session.return_value = True
@@ -137,8 +137,8 @@ def test_cmd_run_freshness_ordering(
     mock_get_provider, mock_online, mock_makedirs, mock_exists,
 ):
     mock_get_targets.return_value = [
-        ({"name": "sda"}, "/mnt/A", "serial-A", "uuid-A", "labA"),
-        ({"name": "sdb"}, "/mnt/B", "serial-B", "uuid-B", "labB"),
+        ({"name": "sda"}, "/mnt/A", "serial-A", "uuid-A", "labA", False),
+        ({"name": "sdb"}, "/mnt/B", "serial-B", "uuid-B", "labB", False),
     ]
 
     store_instance = MagicMock()
@@ -184,8 +184,8 @@ def test_cmd_run_freshness_counts_complete_with_warnings(
     """A drive whose latest finalized session is complete_with_warnings
     must still count as 'recently used' for freshness ordering."""
     mock_get_targets.return_value = [
-        ({"name": "sda"}, "/mnt/A", "serial-A", "uuid-A", "labA"),
-        ({"name": "sdb"}, "/mnt/B", "serial-B", "uuid-B", "labB"),
+        ({"name": "sda"}, "/mnt/A", "serial-A", "uuid-A", "labA", False),
+        ({"name": "sdb"}, "/mnt/B", "serial-B", "uuid-B", "labB", False),
     ]
 
     store_instance = MagicMock()
@@ -230,8 +230,8 @@ def test_cmd_run_cross_drive_copy_dest(
     mock_get_provider, mock_online, mock_makedirs, mock_exists,
 ):
     mock_get_targets.return_value = [
-        ({"name": "sda"}, "/mnt/A", "sA", "uA", "labA"),
-        ({"name": "sdb"}, "/mnt/B", "sB", "uB", "labB"),
+        ({"name": "sda"}, "/mnt/A", "sA", "uA", "labA", False),
+        ({"name": "sdb"}, "/mnt/B", "sB", "uB", "labB", False),
     ]
     mock_index_cls.return_value.get_drive.return_value = None
 
@@ -279,8 +279,8 @@ def test_cmd_run_partial_a_preserves_b_reuse_for_succeeded_hosts(
     mock_get_provider, mock_online, mock_makedirs, mock_exists,
 ):
     mock_get_targets.return_value = [
-        ({"name": "sda"}, "/mnt/A", "sA", "uA", "labA"),
-        ({"name": "sdb"}, "/mnt/B", "sB", "uB", "labB"),
+        ({"name": "sda"}, "/mnt/A", "sA", "uA", "labA", False),
+        ({"name": "sdb"}, "/mnt/B", "sB", "uB", "labB", False),
     ]
     mock_index_cls.return_value.get_drive.return_value = None
 

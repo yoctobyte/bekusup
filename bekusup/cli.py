@@ -235,7 +235,7 @@ def ensure_config_exists_or_route(args):
 
 def cmd_run(args, config):
     from .lock import RunLock
-    from .scanner import get_verified_targets
+    from .scanner import get_verified_targets, unmount_if_mounted_by_bekusup
     from .store import IndexStore
     from .session import SessionManager
     from .transports import get_provider
@@ -251,11 +251,11 @@ def cmd_run(args, config):
         targets = get_verified_targets(
             config,
             store,
-            allow_mount=not dry_run,
+            allow_mount=True,
         )
 
         def freshness(target):
-            disk, mp, serial, uuid, label = target
+            disk, mp, serial, uuid, label, mounted_by_bekusup = target
             drive_id = serial if serial else f"{uuid}-{label}"
             info = store.get_drive(drive_id)
             if not info or not info.get("sessions"):
@@ -271,7 +271,7 @@ def cmd_run(args, config):
         targets = sorted(targets, key=freshness, reverse=True)
         host_cache_bases = {}
 
-        for disk, mp, serial, uuid, label in targets:
+        for disk, mp, serial, uuid, label, mounted_by_bekusup in targets:
             drive_id = serial if serial else f"{uuid}-{label}"
             print(
                 f"\n>>> Executing Run on Target: /dev/{disk.get('name')} "
@@ -356,6 +356,9 @@ def cmd_run(args, config):
                     if host_status["status"] in ("succeeded", "partial"):
                         host_cache_bases[host_name] = final_dir
 
+            if dry_run and mounted_by_bekusup:
+                unmount_if_mounted_by_bekusup(mp)
+
         if dry_run:
             print("=== DRY RUN COMPLETE: no durable writes were made ===")
 
@@ -425,7 +428,11 @@ def cmd_enroll(args, config):
     print("Enrolling new backup disk...")
     disk = resolve_target_disk(config)
     print(f"Target selected: /dev/{disk.get('name')} [label: {disk.get('label')}]")
-    mountpoint = ensure_mounted(disk, config.destination.fallback_mount_root, allow_mount=True)
+    mountpoint, _mounted_by_bekusup = ensure_mounted(
+        disk,
+        config.destination.fallback_mount_root,
+        allow_mount=True,
+    )
 
     serial, uuid, label = get_disk_identity(disk)
     print(f"Identity -> Serial: {serial}, UUID: {uuid}")
@@ -457,6 +464,12 @@ def cmd_configure(args, _config):
     raise SystemExit(run_config_wizard(args.config, allow_overwrite=True))
 
 
+def cmd_flyover(args, _config):
+    from .flyover import main as flyover_main
+
+    return flyover_main(["--config", args.config])
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description="Bekusup - Tape-Drive Style Rotating Backup")
     parser.add_argument("-c", "--config", default="config.yaml", help="Path to config file")
@@ -478,6 +491,7 @@ def build_parser():
     subparsers.add_parser("enroll", help="Perform one-time approval of a new backup disk")
     subparsers.add_parser("init", help="Interactively create a starter config")
     subparsers.add_parser("configure", help="Interactively update the existing config")
+    subparsers.add_parser("flyover", help="Preflight config, disk, host, and source-size checks")
     return parser
 
 
@@ -496,6 +510,9 @@ def main(argv=None):
     if command == "configure":
         return run_config_wizard(args.config, allow_overwrite=True)
 
+    if command == "flyover":
+        return cmd_flyover(args, None)
+
     if command in ("scan", "enroll") and not os.path.exists(args.config):
         config = Config()
     else:
@@ -512,6 +529,8 @@ def main(argv=None):
         cmd_enroll(args, config)
     elif command == "configure":
         return run_config_wizard(args.config, allow_overwrite=True)
+    elif command == "flyover":
+        return cmd_flyover(args, config)
     else:
         parser.print_help()
         return 1

@@ -97,7 +97,9 @@ class TestCliConvenienceFlow(unittest.TestCase):
         config.hosts[0].paths = [path_cfg]
         config.run_policy.max_parallel_hosts = 1
 
-        mock_get_targets.return_value = [({"name": "sdb"}, "/mnt/backup", "serial1", "uuid1", "backup")]
+        mock_get_targets.return_value = [
+            ({"name": "sdb"}, "/mnt/backup", "serial1", "uuid1", "backup", False)
+        ]
         mock_index_cls.return_value.get_drive.return_value = None
 
         session = MagicMock()
@@ -122,6 +124,47 @@ class TestCliConvenienceFlow(unittest.TestCase):
         _, kwargs = mock_session_mgr.call_args
         self.assertTrue(kwargs["dry_run"])
         self.assertTrue(provider.sync.call_args.kwargs["dry_run"])
+
+    @patch("builtins.print")
+    @patch("bekusup.scanner.unmount_if_mounted_by_bekusup")
+    @patch("bekusup.transports.get_provider")
+    @patch("bekusup.scanner.get_verified_targets")
+    @patch("bekusup.store.IndexStore")
+    @patch("bekusup.session.SessionManager")
+    def test_cmd_run_dry_run_unmounts_temporary_mount(
+        self,
+        mock_session_mgr,
+        mock_index_cls,
+        mock_get_targets,
+        mock_get_provider,
+        mock_unmount,
+        mock_print,
+    ):
+        config = MagicMock()
+        config.hosts = []
+        config.run_policy.max_parallel_hosts = 1
+        mock_get_targets.return_value = [
+            ({"name": "sdb"}, "/mnt/backup", "serial1", "uuid1", "backup", True)
+        ]
+        mock_index_cls.return_value.get_drive.return_value = None
+
+        session = MagicMock()
+        session.begin_session.return_value = True
+        session.snapshot_base = None
+        session.sessions_dir = "/mnt/backup/sessions"
+        session.timestamp = "2026-01-01T00-00-00"
+        session.manifest = {"outcome": "complete", "hosts": {}}
+        mock_session_mgr.return_value = session
+
+        args = MagicMock()
+        args.dry_run = False
+        args.no_dry_run = False
+
+        cli.cmd_run(args, config)
+
+        mock_get_targets.assert_called_once()
+        self.assertTrue(mock_get_targets.call_args.kwargs["allow_mount"])
+        mock_unmount.assert_called_once_with("/mnt/backup")
 
     @patch("builtins.print")
     @patch("bekusup.cli.write_yaml_atomic")

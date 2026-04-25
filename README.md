@@ -43,11 +43,13 @@ For password-over-SSH (not recommended, but supported): `ssh://user:password@hos
 | `scan` | Reports eligible disks, enrollment status, session history, and per-host last-known-good coverage. |
 | `enroll` | One-time approval of a newly plugged disk: writes `.bekusup-volume.json` to it and records its serial/UUID locally. |
 | `run` | Performs one backup cycle across all enrolled disks present, backing up every configured host to each one. |
+| `flyover` | Preflight helper: checks config, disk mountability/trust, host reachability, and source sizes without creating backup sessions. |
 
 ```bash
 ./bekusup-cli.sh --config ./config.yaml scan
 ./bekusup-cli.sh enroll
 ./bekusup-cli.sh run
+./bekusup-flyover.sh --config ./config.yaml
 ```
 
 ## Installation
