@@ -1,5 +1,7 @@
 import yaml
 import sys
+import os
+import tempfile
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -79,3 +81,18 @@ def load_config(path: str) -> Config:
         hosts.append(host)
 
     return Config(destination=dest, run_policy=policy, hosts=hosts)
+
+def write_yaml_atomic(path, data):
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=".bekusup.", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            yaml.safe_dump(data, handle, sort_keys=False)
+        os.replace(temp_path, path)
+    except Exception:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        raise

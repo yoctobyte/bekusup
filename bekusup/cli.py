@@ -7,7 +7,7 @@ import tempfile
 
 import yaml
 
-from .config import Config, load_config
+from .config import Config, load_config, write_yaml_atomic
 
 
 DEFAULT_DRY_RUN = True
@@ -78,24 +78,21 @@ def build_minimal_local_config():
     }
 
 
-def write_yaml_atomic(path, data):
-    directory = os.path.dirname(os.path.abspath(path)) or "."
-    os.makedirs(directory, exist_ok=True)
-    fd, temp_path = tempfile.mkstemp(prefix=".bekusup.", suffix=".tmp", dir=directory)
-    try:
-        with os.fdopen(fd, "w") as handle:
-            yaml.safe_dump(data, handle, sort_keys=False)
-        os.replace(temp_path, path)
-    except Exception:
-        try:
-            os.remove(temp_path)
-        except OSError:
-            pass
-        raise
 
 
 def run_config_wizard(config_path, allow_overwrite):
     target = os.path.abspath(config_path)
+    
+    # Try fancy TUI first if terminal is capable
+    if sys.stdout.isatty() and os.environ.get("TERM") and os.environ.get("TERM") != "dumb":
+        try:
+            from .tui import start_tui
+            start_tui(target)
+            return 0
+        except Exception as e:
+            # Fallback to simple wizard on TUI failure
+            print(f"Fancy TUI failed to start: {e}. Falling back to simple wizard.", file=sys.stderr)
+
     if os.path.exists(target) and not allow_overwrite:
         print(f"Config already exists at {target}. Refusing to overwrite it automatically.")
         return 1
