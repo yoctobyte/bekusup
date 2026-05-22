@@ -52,8 +52,11 @@ Options:
       --reclaim                Format/reclaim the whole target disk first
       --allow-destructive      Required with --reclaim; acknowledges data loss
       --force-reclaim          Pass --force to disk_reclaim.sh
+      --enroll                 Enroll with Bekusup after selection/reclaim
+                               (default)
       --no-enroll              Skip Bekusup enrollment after selection/reclaim
       --run                    Run bekusup after enrollment
+      --no-run                 Do not run bekusup after enrollment
       --fs TYPE                Filesystem for reclaim: ext4, xfs, btrfs
                                (default: ext4)
       --label-prefix PREFIX    Label prefix for reclaim (default: backupdisk)
@@ -116,11 +119,17 @@ parse_args() {
             --force-reclaim)
                 FORCE_RECLAIM=1
                 ;;
+            --enroll)
+                ENROLL=1
+                ;;
             --no-enroll)
                 ENROLL=0
                 ;;
             --run)
                 RUN_BACKUP=1
+                ;;
+            --no-run)
+                RUN_BACKUP=0
                 ;;
             --fs)
                 shift

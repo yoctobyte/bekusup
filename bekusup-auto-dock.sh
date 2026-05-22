@@ -10,6 +10,39 @@ REMOTE_CONFIG="${BEKUSUP_REMOTE_CONFIG:-/home/rene/bekusup/config.yaml}"
 FS_TYPE="${BEKUSUP_DOCK_FS:-ext4}"
 LABEL_PREFIX="${BEKUSUP_DOCK_LABEL_PREFIX:-backupdisk}"
 
+usage() {
+  cat <<EOF
+Usage: ./bekusup-auto-dock.sh [extra dock_auto_proceed.sh args]
+
+Runs Bekusup remote dock auto mode with the usual defaults:
+
+  remote host:   $REMOTE_HOST
+  remote repo:   $REMOTE_REPO
+  remote config: $REMOTE_CONFIG
+  filesystem:    $FS_TYPE
+  label prefix:  $LABEL_PREFIX
+
+The default action auto-detects exactly one safe-looking docked HDD on the
+remote host, reclaims/formats it, enrolls it, and runs a real Bekusup backup.
+
+Override defaults with:
+  BEKUSUP_DOCK_HOST=host
+  BEKUSUP_REMOTE_REPO=/path/to/bekusup
+  BEKUSUP_REMOTE_CONFIG=/path/to/config.yaml
+  BEKUSUP_DOCK_FS=ext4|xfs|btrfs
+  BEKUSUP_DOCK_LABEL_PREFIX=backupdisk
+
+Extra arguments are passed to tools/disk/dock_auto_proceed.sh.
+EOF
+}
+
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+esac
+
 cat <<EOF
 Bekusup remote dock auto mode
 
