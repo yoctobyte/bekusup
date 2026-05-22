@@ -13,6 +13,12 @@ def mock_config():
     config.run_policy.max_parallel_hosts = 1
     return config
 
+
+@pytest.fixture(autouse=True)
+def mock_run_lock():
+    with patch('bekusup.lock.RunLock'):
+        yield
+
 @patch('bekusup.transports.get_provider')
 @patch('bekusup.scanner.get_verified_targets')
 @patch('bekusup.store.IndexStore')
@@ -25,6 +31,7 @@ def test_cmd_run_host_unreachable(mock_sub_run, mock_session_mgr, mock_index, mo
     session_instance = MagicMock()
     session_instance.begin_session.return_value = True
     session_instance.snapshot_base = None
+    session_instance.get_snapshot_base_for_host.return_value = None
     mock_session_mgr.return_value = session_instance
     
     import subprocess
@@ -52,6 +59,7 @@ def test_cmd_run_host_partial(mock_sub_run, mock_session_mgr, mock_index, mock_g
     session_instance = MagicMock()
     session_instance.begin_session.return_value = True
     session_instance.snapshot_base = None
+    session_instance.get_snapshot_base_for_host.return_value = None
     mock_session_mgr.return_value = session_instance
     
     # allow ping to succeed
@@ -96,17 +104,22 @@ def _make_session_factory(finalize_manifests):
     """
     sessions = []
 
-    def mk_session(mp, cfg, store, drive_id):
+    def mk_session(mp, cfg, store, drive_id, **kwargs):
         sm = MagicMock()
         sm.target_mount = mp
-        sm.sessions_dir = f"{mp}/sessions"
+        sm.sessions_dir = mp
         sm.timestamp = f"ts-{drive_id}"
         sm.snapshot_base = None
+        sm.get_snapshot_base_for_host.return_value = None
         sm.begin_session.return_value = True
         sm.manifest = {"outcome": "complete", "hosts": {}}
+        sm.final_host_dirs = {}
 
-        def get_host_dest(name, _mp=mp, _d=drive_id):
-            return f"{_mp}/sessions/ts-{_d}/{name}"
+        def get_host_dest(host, _sm=sm, _mp=mp, _d=drive_id):
+            name = getattr(host, "name", str(host))
+            dest = f"{_mp}/{name}Tts-{_d}.incomplete"
+            _sm.final_host_dirs[name] = f"{_mp}/{name}Tts-{_d}"
+            return dest
         sm.get_host_dest_dir.side_effect = get_host_dest
 
         def record(name, status, details=None, _sm=sm):
@@ -152,10 +165,11 @@ def test_cmd_run_freshness_ordering(
     mock_index_cls.return_value = store_instance
 
     call_order = []
-    def mk(mp, cfg, store, drive_id):
+    def mk(mp, cfg, store, drive_id, **kwargs):
         call_order.append(mp)
         sm = MagicMock()
         sm.begin_session.return_value = False
+        sm.get_snapshot_base_for_host.return_value = None
         return sm
     mock_session_mgr.side_effect = mk
 
@@ -200,10 +214,11 @@ def test_cmd_run_freshness_counts_complete_with_warnings(
     mock_index_cls.return_value = store_instance
 
     call_order = []
-    def mk(mp, cfg, store, drive_id):
+    def mk(mp, cfg, store, drive_id, **kwargs):
         call_order.append(mp)
         sm = MagicMock()
         sm.begin_session.return_value = False
+        sm.get_snapshot_base_for_host.return_value = None
         return sm
     mock_session_mgr.side_effect = mk
 
@@ -263,8 +278,55 @@ def test_cmd_run_cross_drive_copy_dest(
 
     _, kw_b = sync_calls[1]
     assert kw_b["snapshot_base"] is not None
-    assert "/mnt/A/sessions/ts-sA" in kw_b["snapshot_base"]
-    assert "/h1/data" in kw_b["snapshot_base"]
+    assert "/mnt/A/h1Tts-sA" in kw_b["snapshot_base"]
+    assert kw_b["snapshot_base"].endswith("/data")
+
+
+@patch('bekusup.cli.os.path.exists', return_value=True)
+@patch('bekusup.cli.os.makedirs')
+@patch('bekusup.cli.is_host_online', return_value=True)
+@patch('bekusup.transports.get_provider')
+@patch('bekusup.scanner.get_verified_targets')
+@patch('bekusup.store.IndexStore')
+@patch('bekusup.session.SessionManager')
+def test_cmd_run_dot_dest_subdir_reuses_host_folder_as_snapshot_base(
+    mock_session_mgr, mock_index_cls, mock_get_targets,
+    mock_get_provider, mock_online, mock_makedirs, mock_exists,
+):
+    mock_get_targets.return_value = [
+        ({"name": "sda"}, "/mnt/A", "sA", "uA", "labA", False),
+    ]
+    mock_index_cls.return_value.get_drive.return_value = None
+
+    session = MagicMock()
+    session.begin_session.return_value = True
+    session.get_snapshot_base_for_host.return_value = "/mnt/A/ian@viaTold"
+    session.get_host_dest_dir.return_value = "/mnt/A/ian@viaTnew.incomplete"
+    session.manifest = {"outcome": "complete", "hosts": {"via": {"status": "succeeded"}}}
+    session.final_host_dirs = {"via": "/mnt/A/ian@viaTnew"}
+    mock_session_mgr.return_value = session
+
+    provider = MagicMock()
+    provider.sync.return_value = True
+    mock_get_provider.return_value = provider
+
+    host = MagicMock()
+    host.name = "via"
+    host.uri = "ssh://ian@via"
+    path = MagicMock()
+    path.source = "/home/ian"
+    path.dest_subdir = "."
+    host.paths = [path]
+
+    cfg = MagicMock()
+    cfg.hosts = [host]
+    cfg.run_policy.max_parallel_hosts = 1
+
+    cmd_run(None, cfg)
+
+    sync_call = provider.sync.call_args
+    assert sync_call.args[1] == "/mnt/A/ian@viaTnew.incomplete"
+    assert sync_call.kwargs["snapshot_base"] == "/mnt/A/ian@viaTold"
 
 
 @patch('bekusup.cli.os.path.exists', return_value=True)
@@ -288,7 +350,7 @@ def test_cmd_run_partial_a_preserves_b_reuse_for_succeeded_hosts(
     factory, _ = _make_session_factory(finalize_manifests)
     mock_session_mgr.side_effect = factory
 
-    def fake_sync(source, dest, snapshot_base=None):
+    def fake_sync(source, dest, snapshot_base=None, **kwargs):
         # Drive A: h1 succeeds, h2 fails. Drive B: both succeed.
         if "/mnt/A" in dest:
             return "h1" in dest
@@ -324,11 +386,11 @@ def test_cmd_run_partial_a_preserves_b_reuse_for_succeeded_hosts(
         if "/mnt/B" in c.args[1] or "/mnt/B" in c.kwargs.get("dest", "")
     ]
     # Fallback: positional dest is args[1]
-    h1_b = next(c for c in b_calls if "/h1/" in c.args[1])
-    h2_b = next(c for c in b_calls if "/h2/" in c.args[1])
+    h1_b = next(c for c in b_calls if "/h1T" in c.args[1])
+    h2_b = next(c for c in b_calls if "/h2T" in c.args[1])
 
     assert h1_b.kwargs["snapshot_base"] is not None
-    assert "/mnt/A/sessions/ts-sA" in h1_b.kwargs["snapshot_base"]
+    assert "/mnt/A/h1Tts-sA" in h1_b.kwargs["snapshot_base"]
     assert h2_b.kwargs["snapshot_base"] is None, (
         "h2 failed on A, so B must NOT reuse A as cache for h2"
     )
@@ -345,7 +407,7 @@ def test_cmd_enroll_smoke(mock_scan, mock_mount, mock_index_cls, mock_write_mark
     mock_scan.return_value = [{
         "name": "sdb", "label": "my_backup", "serial": "S1", "uuid": "U1",
     }]
-    mock_mount.return_value = "/mnt/backup"
+    mock_mount.return_value = ("/mnt/backup", False)
     mock_index_cls.return_value.enroll_drive.return_value = "S1"
 
     cfg = MagicMock()
@@ -368,7 +430,7 @@ def test_cmd_enroll_refuses_identityless_disk(mock_scan, mock_mount, mock_index_
     mock_scan.return_value = [{
         "name": "sdb", "label": "sketchy_backup", "serial": "", "uuid": "",
     }]
-    mock_mount.return_value = "/mnt/backup"
+    mock_mount.return_value = ("/mnt/backup", False)
 
     cfg = MagicMock()
     cfg.destination.label_contains = "backup"
@@ -379,3 +441,31 @@ def test_cmd_enroll_refuses_identityless_disk(mock_scan, mock_mount, mock_index_
 
     mock_write_marker.assert_not_called()
     mock_index_cls.return_value.enroll_drive.assert_not_called()
+
+
+@patch('bekusup.store.write_marker_file')
+@patch('bekusup.store.IndexStore')
+@patch('bekusup.scanner.ensure_mounted')
+@patch('bekusup.scanner.scan_candidate_disks')
+def test_cmd_enroll_can_select_explicit_device(mock_scan, mock_mount, mock_index_cls, mock_write_marker):
+    mock_scan.return_value = [
+        {"name": "sdb1", "label": "backup_a", "serial": "S1", "uuid": "U1"},
+        {"name": "sdc1", "label": "backup_b", "serial": "S2", "uuid": "U2"},
+    ]
+    mock_mount.return_value = ("/mnt/backup_a", False)
+    mock_index_cls.return_value.enroll_drive.return_value = "S1"
+
+    cfg = MagicMock()
+    cfg.destination.label_contains = "backup"
+    cfg.destination.fallback_mount_root = "/mnt"
+    args = MagicMock()
+    args.device = "/dev/sdb1"
+
+    cmd_enroll(args, cfg)
+
+    mock_mount.assert_called_once_with(
+        {"name": "sdb1", "label": "backup_a", "serial": "S1", "uuid": "U1"},
+        "/mnt",
+        allow_mount=True,
+    )
+    mock_write_marker.assert_called_once_with("/mnt/backup_a", "S1", "U1", "backup_a")

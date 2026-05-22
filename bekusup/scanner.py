@@ -2,6 +2,67 @@ import subprocess
 import json
 import sys
 import os
+import shutil
+
+
+def invoking_uid_gid():
+    uid = int(os.environ.get("SUDO_UID") or os.getuid())
+    gid = int(os.environ.get("SUDO_GID") or os.getgid())
+    return uid, gid
+
+
+def sudo_available():
+    return shutil.which("sudo") is not None
+
+
+def run_sudo(cmd):
+    if os.geteuid() == 0:
+        subprocess.run(cmd, check=True)
+    else:
+        subprocess.run(["sudo"] + cmd, check=True)
+
+
+def ensure_marker_writable(mountpoint, uid, gid):
+    marker_path = os.path.join(mountpoint, ".bekusup-volume.json")
+    if not os.path.exists(marker_path) or os.access(marker_path, os.W_OK):
+        return
+    run_sudo(["chown", f"{uid}:{gid}", marker_path])
+
+
+def ensure_mountpoint_writable(mountpoint):
+    uid, gid = invoking_uid_gid()
+    if os.access(mountpoint, os.W_OK):
+        try:
+            ensure_marker_writable(mountpoint, uid, gid)
+        except subprocess.CalledProcessError:
+            print(
+                f"Error: Existing marker at {mountpoint} could not be made writable.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return
+
+    if not sudo_available() and os.geteuid() != 0:
+        print(
+            f"Error: Target {mountpoint} is mounted but not writable by the current user.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        print(f"Making backup mount writable by uid {uid}, gid {gid}: {mountpoint}")
+        run_sudo(["chown", f"{uid}:{gid}", mountpoint])
+        ensure_marker_writable(mountpoint, uid, gid)
+    except subprocess.CalledProcessError:
+        print(
+            f"Error: Target {mountpoint} is mounted but could not be made writable.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not os.access(mountpoint, os.W_OK):
+        print(f"Error: Target {mountpoint} is still not writable.", file=sys.stderr)
+        sys.exit(1)
 
 def get_block_devices():
     """Returns a list of dictionaries with block device information using lsblk."""
@@ -93,12 +154,13 @@ def get_verified_targets(config, store, allow_mount=True):
         
     return targets
 
-def resolve_target_disk(config):
+def resolve_target_disk(config, target_device=None):
     """Return the single eligible candidate disk for enrollment.
 
-    Refuses if zero or more than one candidate matches — enrollment is a
-    one-disk-at-a-time operation, so ambiguity is rejected rather than
-    guessed.
+    If target_device is provided, it must name one of the eligible candidates.
+    Otherwise this refuses if zero or more than one candidate matches —
+    enrollment is a one-disk-at-a-time operation, so ambiguity is rejected
+    rather than guessed.
     """
     candidates = scan_candidate_disks(config.destination.label_contains)
     if not candidates:
@@ -109,11 +171,23 @@ def resolve_target_disk(config):
             file=sys.stderr,
         )
         sys.exit(1)
+    if target_device:
+        requested = os.path.basename(str(target_device).strip())
+        for candidate in candidates:
+            if candidate.get("name") == requested:
+                return candidate
+        names = ", ".join(f"/dev/{d.get('name')}" for d in candidates)
+        print(
+            f"Error: Requested target {target_device} is not an eligible backup disk. "
+            f"Eligible disks: {names}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if len(candidates) > 1:
         names = ", ".join(f"/dev/{d.get('name')}" for d in candidates)
         print(
             f"Error: Found {len(candidates)} eligible disks ({names}). "
-            f"Enroll one disk at a time — disconnect the others first.",
+            f"Run `bekusup enroll /dev/<name>` to choose one.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -136,11 +210,8 @@ def ensure_mounted(disk, fallback_mount_root, allow_mount=True):
     if mounts:
         # Ensure it is writable by current user
         mp = mounts[0]
-        if os.access(mp, os.W_OK):
-            return mp, False
-        else:
-            print(f"Error: Target {mp} is mounted but not writable by the current user.", file=sys.stderr)
-            sys.exit(1)
+        ensure_mountpoint_writable(mp)
+        return mp, False
             
     if not allow_mount:
         print(
@@ -154,10 +225,13 @@ def ensure_mounted(disk, fallback_mount_root, allow_mount=True):
     mount_target = os.path.join(fallback_mount_root, disk.get('label', disk.get('uuid', 'unknown')))
     
     try:
-        os.makedirs(mount_target, exist_ok=True)
+        try:
+            os.makedirs(mount_target, exist_ok=True)
+        except PermissionError:
+            run_sudo(["mkdir", "-p", mount_target])
         print(f"Attempting to mount {dev_path} to {mount_target}...")
-        # Note: Depending on system config, mount may require sudo.
-        subprocess.run(['sudo', '-n', 'mount', dev_path, mount_target], check=True)
+        run_sudo(["mount", dev_path, mount_target])
+        ensure_mountpoint_writable(mount_target)
         return mount_target, True
     except subprocess.CalledProcessError:
         print(f"Error: Failed to safely mount {dev_path}. You may need to mount it manually.", file=sys.stderr)

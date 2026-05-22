@@ -36,7 +36,8 @@ class TestScanner(unittest.TestCase):
         self.assertEqual(candidates[0]["name"], "sdb")
 
     @patch('bekusup.scanner.os.access', return_value=True)
-    def test_ensure_mounted_existing_mount_returns_not_temporary(self, mock_access):
+    @patch('bekusup.scanner.os.path.exists', return_value=False)
+    def test_ensure_mounted_existing_mount_returns_not_temporary(self, mock_exists, mock_access):
         mp, temporary = ensure_mounted(
             {"name": "sdb1", "mountpoints": ["/mnt/backup"]},
             "/mnt/bekusup",
@@ -45,10 +46,12 @@ class TestScanner(unittest.TestCase):
         self.assertEqual(mp, "/mnt/backup")
         self.assertFalse(temporary)
 
+    @patch('bekusup.scanner.os.access', return_value=True)
+    @patch('bekusup.scanner.os.path.exists', return_value=False)
     @patch('builtins.print')
     @patch('bekusup.scanner.subprocess.run')
     @patch('bekusup.scanner.os.makedirs')
-    def test_ensure_mounted_can_mount_and_reports_temporary(self, mock_makedirs, mock_run, mock_print):
+    def test_ensure_mounted_can_mount_and_reports_temporary(self, mock_makedirs, mock_run, mock_print, mock_exists, mock_access):
         mp, temporary = ensure_mounted(
             {"name": "sdb1", "label": "backup_a", "mountpoints": []},
             "/mnt/bekusup",
@@ -57,7 +60,41 @@ class TestScanner(unittest.TestCase):
 
         self.assertEqual(mp, "/mnt/bekusup/backup_a")
         self.assertTrue(temporary)
-        mock_run.assert_called_once_with(['sudo', '-n', 'mount', '/dev/sdb1', '/mnt/bekusup/backup_a'], check=True)
+        mock_run.assert_called_once_with(['sudo', 'mount', '/dev/sdb1', '/mnt/bekusup/backup_a'], check=True)
+
+    @patch('bekusup.scanner.invoking_uid_gid', return_value=(1000, 1000))
+    @patch('bekusup.scanner.sudo_available', return_value=True)
+    @patch('bekusup.scanner.os.path.exists', return_value=False)
+    @patch('bekusup.scanner.os.access', side_effect=[False, True])
+    @patch('bekusup.scanner.subprocess.run')
+    def test_ensure_mounted_existing_mount_chowns_when_needed(self, mock_run, mock_access, mock_exists, mock_sudo, mock_uid):
+        mp, temporary = ensure_mounted(
+            {"name": "sdb1", "mountpoints": ["/mnt/backup"]},
+            "/mnt/bekusup",
+        )
+
+        self.assertEqual(mp, "/mnt/backup")
+        self.assertFalse(temporary)
+        self.assertEqual(mock_run.call_args_list[0].args[0], ['sudo', 'chown', '1000:1000', '/mnt/backup'])
+
+    @patch('bekusup.scanner.invoking_uid_gid', return_value=(1000, 1000))
+    @patch('bekusup.scanner.os.path.exists', return_value=True)
+    @patch('bekusup.scanner.os.access', side_effect=[True, False])
+    @patch('bekusup.scanner.subprocess.run')
+    def test_ensure_mounted_existing_mount_chowns_marker_when_dir_writable(
+        self, mock_run, mock_access, mock_exists, mock_uid
+    ):
+        mp, temporary = ensure_mounted(
+            {"name": "sdb1", "mountpoints": ["/mnt/backup"]},
+            "/mnt/bekusup",
+        )
+
+        self.assertEqual(mp, "/mnt/backup")
+        self.assertFalse(temporary)
+        mock_run.assert_called_once_with(
+            ['sudo', 'chown', '1000:1000', '/mnt/backup/.bekusup-volume.json'],
+            check=True,
+        )
 
     @patch('builtins.print')
     @patch('bekusup.scanner.subprocess.run')
@@ -98,3 +135,23 @@ def test_resolve_target_disk_multiple(mock_scan):
     ]
     with pytest.raises(SystemExit):
         resolve_target_disk(_cfg())
+
+
+@patch('bekusup.scanner.scan_candidate_disks')
+def test_resolve_target_disk_explicit_device(mock_scan):
+    mock_scan.return_value = [
+        {"name": "sdb1", "label": "backup_a"},
+        {"name": "sdc1", "label": "backup_b"},
+    ]
+    disk = resolve_target_disk(_cfg(), target_device="/dev/sdb1")
+    assert disk["name"] == "sdb1"
+
+
+@patch('bekusup.scanner.scan_candidate_disks')
+def test_resolve_target_disk_explicit_device_must_be_eligible(mock_scan):
+    mock_scan.return_value = [
+        {"name": "sdb1", "label": "backup_a"},
+        {"name": "sdc1", "label": "backup_b"},
+    ]
+    with pytest.raises(SystemExit):
+        resolve_target_disk(_cfg(), target_device="/dev/sdd1")

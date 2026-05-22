@@ -89,6 +89,8 @@ def write_yaml_atomic(path, data):
     try:
         with os.fdopen(fd, "w") as handle:
             yaml.safe_dump(data, handle, sort_keys=False)
+        if os.geteuid() == 0 and os.environ.get("SUDO_UID"):
+            os.chown(temp_path, int(os.environ["SUDO_UID"]), int(os.environ.get("SUDO_GID", "0")))
         os.replace(temp_path, path)
     except Exception:
         try:

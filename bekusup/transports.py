@@ -31,6 +31,9 @@ class RsyncProvider(SyncProvider):
         cmd = ["rsync", "-aH", "--info=progress2", "--delete"]
         if dry_run:
             cmd.append("--dry-run")
+
+        if self.host.transport == "ssh" and not use_sshpass:
+            cmd.extend(["-e", "ssh -o BatchMode=yes"])
         
         if self.host.bandwidth_limit_kbps > 0:
             cmd.append(f"--bwlimit={self.host.bandwidth_limit_kbps}")
@@ -86,6 +89,8 @@ class ScpProvider(SyncProvider):
             return True
         remote, use_sshpass, password = self.parse_uri()
         cmd = ["scp", "-r"]
+        if self.host.transport == "ssh" and not use_sshpass:
+            cmd.extend(["-o", "BatchMode=yes"])
         
         if self.host.bandwidth_limit_kbps > 0:
             cmd.extend(["-l", str(self.host.bandwidth_limit_kbps * 8)])

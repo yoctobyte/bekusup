@@ -4,6 +4,7 @@ import json
 import subprocess
 import socket
 import re
+import sys
 from pathlib import Path
 from .config import load_config, write_yaml_atomic, HostConfig, PathConfig
 
@@ -225,7 +226,6 @@ class BekusupTUI:
         
         # Try to find a pattern in previous URIs
         users = []
-        passwords = {} # user -> list of passwords
         for h in hosts:
             uri = h.get("uri")
             if uri and uri.startswith("ssh://"):
@@ -233,9 +233,8 @@ class BekusupTUI:
                 if "@" in raw:
                     user_pass, host_part = raw.split("@", 1)
                     if ":" in user_pass:
-                        u, p = user_pass.split(":", 1)
+                        u, _password = user_pass.split(":", 1)
                         users.append(u)
-                        passwords.setdefault(u, []).append(p)
                     else:
                         users.append(user_pass)
         
@@ -243,35 +242,96 @@ class BekusupTUI:
         if users:
             user = max(set(users), key=users.count)
         
-        password = ""
-        if user in passwords:
-            password = max(set(passwords[user]), key=passwords[user].count)
-            
-        if password:
-            return f"ssh://{user}:{password}@{name}"
         return f"ssh://{user}@{name}"
 
+    def _smart_guess_ssh_target(self):
+        return self._smart_guess_uri(self._smart_guess_name()).replace("ssh://", "", 1)
+
+    def _split_ssh_target(self, target):
+        raw = target.replace("ssh://", "", 1).strip()
+        user = None
+        host_part = raw
+        if "@" in raw:
+            user_part, host_part = raw.rsplit("@", 1)
+            user = user_part.split(":", 1)[0] if user_part else None
+
+        if host_part.startswith("[") and "]" in host_part:
+            name = host_part[1:host_part.index("]")]
+        else:
+            name = host_part.rsplit(":", 1)[0] if ":" in host_part else host_part
+
+        return user, name or "host1", raw
+
+    def _remote_from_ssh_target(self, raw_target):
+        host_part = raw_target
+        user_part = None
+        password = None
+        if "@" in raw_target:
+            user_part, host_part = raw_target.rsplit("@", 1)
+            if ":" in user_part:
+                user, password = user_part.split(":", 1)
+                user_part = user
+
+        remote = f"{user_part}@{host_part}" if user_part else host_part
+        return remote, password
+
+    def _verify_ssh_target(self, raw_target):
+        remote, password = self._remote_from_ssh_target(raw_target)
+        cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", remote, "true"]
+        if password:
+            cmd = ["sshpass", "-p", password] + ["ssh", "-o", "ConnectTimeout=4", remote, "true"]
+
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=8)
+            return True
+        except Exception:
+            return False
+
+    def _ssh_copy_id_command(self, raw_target):
+        remote, _password = self._remote_from_ssh_target(raw_target)
+        return ["ssh-copy-id", remote]
+
+    def _install_ssh_key_interactive(self, raw_target):
+        cmd = self._ssh_copy_id_command(raw_target)
+        if self.stdscr is not None:
+            curses.def_prog_mode()
+            curses.endwin()
+        try:
+            print(f"Installing SSH key with: {' '.join(cmd)}")
+            result = subprocess.run(cmd, check=False)
+            input("Press Enter to return to bekusup...")
+            return result.returncode == 0
+        finally:
+            if self.stdscr is not None:
+                curses.reset_prog_mode()
+                curses.curs_set(0)
+
     def _add_host_flow(self):
-        name = self._get_input("Host Name", self._smart_guess_name())
-        if not name: return
-        
-        transport = self._get_input("Transport (ssh/local)", "ssh")
-        uri = "local"
-        if transport == "ssh":
-            uri = self._get_input("URI", self._smart_guess_uri(name))
-        
-        source = self._get_input("Source Path", f"/home/{os.environ.get('USER', 'user')}")
-        dest_subdir = self._get_input("Dest Subdir", name)
+        target = self._get_input("SSH target", self._smart_guess_ssh_target())
+        if not target: return
+
+        user, name, raw_target = self._split_ssh_target(target)
+        source_user = user or os.environ.get('USER', 'user')
+        source = "/root" if source_user == "root" else f"/home/{source_user}"
+        verified = self._verify_ssh_target(raw_target)
+        if not verified:
+            install = self._get_input("SSH key failed. Install key? (y/N)", "y")
+            if install.lower() in ("y", "yes"):
+                if self._install_ssh_key_interactive(raw_target):
+                    verified = self._verify_ssh_target(raw_target)
         
         new_host = {
             "name": name,
-            "transport": transport,
-            "uri": uri if transport == "ssh" else None,
-            "paths": [{"source": source, "dest_subdir": dest_subdir}]
+            "transport": "ssh",
+            "uri": f"ssh://{raw_target}",
+            "paths": [{"source": source, "dest_subdir": "."}]
         }
         self.config_data["hosts"].append(new_host)
         self.selected_index = len(self.config_data["hosts"]) - 1
-        self._set_status(f"Added {name}", "active")
+        if verified:
+            self._set_status(f"Added {name}; SSH verified", "active")
+        else:
+            self._set_status(f"Added {name}; SSH not verified", "warn")
 
     def _edit_host_flow(self):
         hosts = self.config_data.get("hosts", [])
@@ -331,7 +391,7 @@ class BekusupTUI:
                         "name": name,
                         "transport": "ssh",
                         "uri": uri,
-                        "paths": [{"source": "/home/user", "dest_subdir": name}]
+                        "paths": [{"source": "/home/user", "dest_subdir": "."}]
                     })
                 self._set_status(f"Added {len(discovered)} nodes.", "active")
             else:

@@ -3,10 +3,28 @@ import json
 import time
 from pathlib import Path
 import threading
+import pwd
+
+
+def user_data_path(path):
+    path = str(path)
+    expanded = os.path.expanduser(path)
+    if not path.startswith("~/"):
+        return Path(expanded)
+
+    sudo_user = os.environ.get("SUDO_USER")
+    if os.geteuid() == 0 and sudo_user:
+        try:
+            home = pwd.getpwnam(sudo_user).pw_dir
+            return Path(home) / path[2:]
+        except KeyError:
+            pass
+
+    return Path(expanded)
 
 class IndexStore:
     def __init__(self, index_file="~/.local/share/bekusup/index.json"):
-        self.index_file = Path(os.path.expanduser(index_file))
+        self.index_file = user_data_path(index_file)
         self.data = {"drives": {}}
         self.lock = threading.Lock()
         self._load()

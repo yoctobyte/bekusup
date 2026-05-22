@@ -70,7 +70,7 @@ def build_minimal_local_config():
                 "paths": [
                     {
                         "source": os.path.join("/home", username),
-                        "dest_subdir": os.path.join("home", username),
+                        "dest_subdir": ".",
                     }
                 ],
             }
@@ -121,7 +121,7 @@ def run_config_wizard(config_path, allow_overwrite):
                         "paths": [
                             {
                                 "source": existing.hosts[0].paths[0].source if existing.hosts and existing.hosts[0].paths else os.path.join("/home", os.environ.get("USER") or "user"),
-                                "dest_subdir": existing.hosts[0].paths[0].dest_subdir if existing.hosts and existing.hosts[0].paths else os.path.join("home", os.environ.get("USER") or "user"),
+                                "dest_subdir": existing.hosts[0].paths[0].dest_subdir if existing.hosts and existing.hosts[0].paths else ".",
                             }
                         ],
                     }
@@ -179,6 +179,7 @@ def interactive_menu(config_path, config_exists):
         print("  2. Scan for candidate backup disks")
         print("  3. Enroll a backup disk")
         print("  4. Reconfigure config")
+        print("  5. Find hardlink candidates")
         print("  q. Quit")
     else:
         print(f"No config file found at {abs_config}.")
@@ -199,6 +200,8 @@ def interactive_menu(config_path, config_exists):
             return "enroll"
         if choice == "4":
             return "configure"
+        if choice == "5":
+            return "hardlink-candidates"
         return None
 
     if choice in ("", "1"):
@@ -291,25 +294,38 @@ def cmd_run(args, config):
                     print(f"Skipping host {host.name} [{status}]")
                     return status
 
+                local_snapshot_base = session.get_snapshot_base_for_host(host)
+                if local_snapshot_base:
+                    print(
+                        "Using previous host snapshot as link base: "
+                        f"{os.path.basename(local_snapshot_base)}"
+                    )
+
                 foreign_snapshot_base = host_cache_bases.get(host.name)
-                if not session.snapshot_base and foreign_snapshot_base:
+                if not local_snapshot_base and foreign_snapshot_base:
                     print(
                         "Using Cross-Drive Cache (Copy-Dest) "
                         f"for {host.name} from {os.path.basename(foreign_snapshot_base)}"
                     )
 
                 provider = get_provider(host)
-                host_dest = session.get_host_dest_dir(host.name)
+                host_dest = session.get_host_dest_dir(host)
 
                 all_paths_ok = True
                 any_paths_ok = False
                 for path_cfg in host.paths:
-                    dest_path = os.path.join(host_dest, path_cfg.dest_subdir)
+                    if path_cfg.dest_subdir in ("", "."):
+                        dest_path = host_dest
+                    else:
+                        dest_path = os.path.join(host_dest, path_cfg.dest_subdir)
 
                     host_snapshot_base = None
-                    active_base = session.snapshot_base or foreign_snapshot_base
+                    active_base = local_snapshot_base or foreign_snapshot_base
                     if active_base:
-                        base_path = os.path.join(active_base, host.name, path_cfg.dest_subdir)
+                        if path_cfg.dest_subdir in ("", "."):
+                            base_path = active_base
+                        else:
+                            base_path = os.path.join(active_base, path_cfg.dest_subdir)
                         if os.path.exists(base_path):
                             host_snapshot_base = base_path
 
@@ -348,10 +364,11 @@ def cmd_run(args, config):
 
             session.finalize()
             if session.manifest["outcome"] in ("complete", "complete_with_warnings"):
-                final_dir = os.path.join(session.sessions_dir, session.timestamp)
                 for host_name, host_status in session.manifest["hosts"].items():
                     if host_status["status"] in ("succeeded", "partial"):
-                        host_cache_bases[host_name] = final_dir
+                        final_host_dir = session.final_host_dirs.get(host_name)
+                        if final_host_dir:
+                            host_cache_bases[host_name] = final_host_dir
 
             if dry_run and mounted_by_bekusup:
                 unmount_if_mounted_by_bekusup(mp)
@@ -423,7 +440,8 @@ def cmd_enroll(args, config):
     from .store import IndexStore, get_disk_identity, write_marker_file
 
     print("Enrolling new backup disk...")
-    disk = resolve_target_disk(config)
+    target_device = getattr(args, "device", None)
+    disk = resolve_target_disk(config, target_device=target_device)
     print(f"Target selected: /dev/{disk.get('name')} [label: {disk.get('label')}]")
     mountpoint, _mounted_by_bekusup = ensure_mounted(
         disk,
@@ -451,6 +469,70 @@ def cmd_enroll(args, config):
         print(f"Enrollment refused: {exc}", file=sys.stderr)
         sys.exit(1)
     print(f"Enrolled successfully! Drive ID recorded locally as: {drive_id}")
+
+
+def cmd_hardlink_candidates(args, config):
+    from .hardlink_candidates import (
+        find_hardlink_candidate_groups,
+        fix_candidate_groups,
+        format_bytes,
+        resolve_link_mode,
+        summarize_groups,
+    )
+    from .scanner import get_verified_targets, unmount_if_mounted_by_bekusup
+    from .store import IndexStore
+
+    store = IndexStore()
+    targets = get_verified_targets(config, store, allow_mount=True)
+    limit = getattr(args, "limit", 20)
+    fix = getattr(args, "fix", False)
+    requested_mode = getattr(args, "link_mode", "auto")
+
+    for disk, mp, serial, uuid, label, mounted_by_bekusup in targets:
+        try:
+            link_mode = resolve_link_mode(mp, requested_mode)
+            print(
+                f"\n>>> Hardlink candidates on /dev/{disk.get('name')} "
+                f"[label: {label}] mounted at {mp}"
+            )
+            print(f"Link mode: {link_mode}" + (f" ({requested_mode})" if requested_mode != link_mode else ""))
+            groups = find_hardlink_candidate_groups(mp)
+            summary = summarize_groups(groups)
+            print(
+                f"Found {summary['groups']} candidate groups across "
+                f"{summary['paths']} paths."
+            )
+            print(f"Potential space savings: {format_bytes(summary['potential_savings'])}")
+
+            if not groups:
+                continue
+
+            shown = groups[:limit]
+            for index, group in enumerate(shown, start=1):
+                print(
+                    f"\n[{index}] {group['path_count']} paths, "
+                    f"{group['inode_count']} separate inodes, "
+                    f"size {format_bytes(group['size'])}, "
+                    f"potential {format_bytes(group['potential_savings'])}"
+                )
+                for path in group["paths"]:
+                    print(f"    {path}")
+
+            if len(groups) > limit:
+                print(f"\n... {len(groups) - limit} more groups hidden by --limit {limit}")
+
+            if fix:
+                result = fix_candidate_groups(groups, link_mode)
+                print(
+                    "\nFix result: "
+                    f"{result.changed} paths changed, "
+                    f"{result.skipped} skipped, "
+                    f"{result.errors} errors, "
+                    f"{format_bytes(result.bytes_shared)} shared."
+                )
+        finally:
+            if mounted_by_bekusup:
+                unmount_if_mounted_by_bekusup(mp)
 
 
 def cmd_init(args, _config):
@@ -485,7 +567,33 @@ def build_parser():
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("run", help="Perform one backup cycle against the detected eligible disk")
     subparsers.add_parser("scan", help="Report eligible disks, mount state, free space, and recent sessions")
-    subparsers.add_parser("enroll", help="Perform one-time approval of a new backup disk")
+    hardlink_parser = subparsers.add_parser(
+        "hardlink-candidates",
+        help="Report duplicate files that could be replaced by hardlinks",
+    )
+    hardlink_parser.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum duplicate groups to print per disk",
+    )
+    hardlink_parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Replace duplicate files with hardlinks or reflinks after verifying content",
+    )
+    hardlink_parser.add_argument(
+        "--link-mode",
+        choices=("auto", "hardlink", "reflink"),
+        default="auto",
+        help="Sharing primitive to use with --fix; auto uses reflink on XFS/Btrfs",
+    )
+    enroll_parser = subparsers.add_parser("enroll", help="Perform one-time approval of a new backup disk")
+    enroll_parser.add_argument(
+        "device",
+        nargs="?",
+        help="Optional target device to enroll, e.g. /dev/sdb1",
+    )
     subparsers.add_parser("init", help="Interactively create a starter config")
     subparsers.add_parser("configure", help="Interactively update the existing config")
     subparsers.add_parser("flyover", help="Preflight config, disk, host, and source-size checks")
@@ -510,7 +618,7 @@ def main(argv=None):
     if command == "flyover":
         return cmd_flyover(args, None)
 
-    if command in ("scan", "enroll") and not os.path.exists(args.config):
+    if command in ("scan", "enroll", "hardlink-candidates") and not os.path.exists(args.config):
         config = Config()
     else:
         if not os.path.exists(args.config):
@@ -524,6 +632,8 @@ def main(argv=None):
         cmd_scan(args, config)
     elif command == "enroll":
         cmd_enroll(args, config)
+    elif command == "hardlink-candidates":
+        cmd_hardlink_candidates(args, config)
     elif command == "configure":
         return run_config_wizard(args.config, allow_overwrite=True)
     elif command == "flyover":

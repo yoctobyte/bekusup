@@ -18,6 +18,21 @@ class TestRsyncProvider(unittest.TestCase):
         self.assertIn("sshpass", cmd_called)
         self.assertIn("pass", cmd_called)
         self.assertIn("rsync", cmd_called)
+        self.assertNotIn("ssh -o BatchMode=yes", cmd_called)
+        self.assertIn("user@10.0.0.1:/remote/src/", cmd_called)
+
+    @patch('builtins.print')
+    @patch('bekusup.transports.subprocess.run')
+    @patch('bekusup.transports.os.makedirs')
+    def test_rsync_sync_ssh_without_password_is_non_interactive(self, mock_dirs, mock_run, mock_print):
+        host = HostConfig(name="test", transport="ssh", paths=[], uri="ssh://user@10.0.0.1")
+        provider = RsyncProvider(host)
+
+        provider.sync("/remote/src", "/local/dest")
+
+        cmd_called = mock_run.call_args[0][0]
+        self.assertIn("-e", cmd_called)
+        self.assertIn("ssh -o BatchMode=yes", cmd_called)
         self.assertIn("user@10.0.0.1:/remote/src/", cmd_called)
 
     @patch('builtins.print')

@@ -1,8 +1,9 @@
 import pytest
 import os
 import json
+from pathlib import Path
 from unittest.mock import patch
-from bekusup.store import IndexStore, verify_trust
+from bekusup.store import IndexStore, user_data_path, verify_trust
 
 def test_index_store_log_session(tmp_path):
     index_file = tmp_path / "index.json"
@@ -24,6 +25,17 @@ def test_index_store_log_session(tmp_path):
     assert sess["outcome"] == "complete_with_warnings"
     assert "laptop1" in sess["hosts"]
     assert sess["hosts"]["laptop1"]["status"] == "succeeded"
+
+
+@patch.dict(os.environ, {"SUDO_USER": "rene"})
+@patch("bekusup.store.os.geteuid", return_value=0)
+@patch("bekusup.store.pwd.getpwnam")
+def test_user_data_path_uses_invoking_user_home_under_sudo(mock_getpwnam, mock_geteuid):
+    mock_getpwnam.return_value.pw_dir = "/home/rene"
+
+    assert user_data_path("~/.local/share/bekusup/index.json") == Path(
+        "/home/rene/.local/share/bekusup/index.json"
+    )
 
 def test_verify_trust_missing_marker(tmp_path):
     store = IndexStore(tmp_path / "index.json")
