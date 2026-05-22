@@ -56,6 +56,8 @@ For password-over-SSH (not recommended, but supported): `ssh://user:password@hos
 
 Low-level disk lifecycle scripts live in `tools/disk/`:
 
+- `dock_auto_proceed.sh`: orchestrate a newly inserted local or remote docked
+  disk through selection, optional reclaim, enrollment, and optional backup.
 - `disk_reclaim.sh`: destructively reclaim and format a whole disk after safety
   checks.
 - `disk_burnin.sh`: run a write/read burn-in against a mounted filesystem or
