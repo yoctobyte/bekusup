@@ -52,6 +52,12 @@ For password-over-SSH (not recommended, but supported): `ssh://user:password@hos
 ./bekusup-flyover.sh --config ./config.yaml
 ```
 
+For the common remote-dock workflow, `./bekusup-auto-dock.sh` runs the full
+operator path against the configured dock host: auto-detect exactly one docked
+HDD, reclaim/format it, enroll it, and run a real backup. It defaults to
+`BEKUSUP_DOCK_HOST=borg` and can be pointed elsewhere with environment
+variables printed by the launcher.
+
 ## Disk Preparation Tools
 
 Low-level disk lifecycle scripts live in `tools/disk/`:
