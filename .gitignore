@@ -41,6 +41,8 @@ coverage.xml
 # Local data & User specific
 index.json
 .bekusup-volume.json
+config.yaml
+tools/disk/local-evidence/
 *.bak
 *.swp
 *.swo

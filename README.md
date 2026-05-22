@@ -52,6 +52,20 @@ For password-over-SSH (not recommended, but supported): `ssh://user:password@hos
 ./bekusup-flyover.sh --config ./config.yaml
 ```
 
+## Disk Preparation Tools
+
+Low-level disk lifecycle scripts live in `tools/disk/`:
+
+- `disk_reclaim.sh`: destructively reclaim and format a whole disk after safety
+  checks.
+- `disk_burnin.sh`: run a write/read burn-in against a mounted filesystem or
+  partition.
+- `smart_log.sh`: save timestamped SMART reports for comparison.
+
+These are operator tools for preparing rotation media before normal Bekusup
+enrollment. They can erase data or record hardware identifiers; read
+`tools/disk/README.md` and each script's `--help` before use.
+
 ## Installation
 
 ### System packages (recommended on Debian/Ubuntu)
